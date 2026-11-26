@@ -1,17 +1,22 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { VRMLoaderPlugin } from "@pixiv/three-vrm";
+import { VRMLoaderPlugin, type VRM } from "@pixiv/three-vrm";
+import { getAvatarAnimationFrame, type AvatarAnimationState } from "./avatarAnimation";
 
 interface AvatarViewProps {
+  state: AvatarAnimationState;
   onLoaded: () => void;
   onError: (message: string) => void;
 }
 
 const MODEL_URL = "/models/avatar.vrm";
+const EXPRESSION_NAMES = ["neutral", "happy", "relaxed", "lookUp", "aa", "blink"] as const;
 
-function AvatarView({ onLoaded, onError }: AvatarViewProps) {
+function AvatarView({ state, onLoaded, onError }: AvatarViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -19,7 +24,19 @@ function AvatarView({ onLoaded, onError }: AvatarViewProps) {
 
     let disposed = false;
     let animationFrame = 0;
-    let loadedVrm: { update: (delta: number) => void; scene: THREE.Object3D } | null = null;
+    let loadedVrm: VRM | null = null;
+    let head: THREE.Object3D | null = null;
+    let headRestRotation: THREE.Euler | null = null;
+    let bodyRestRotation: THREE.Euler | null = null;
+    let elapsedSeconds = 0;
+    const currentExpressionWeights = {
+      neutral: 1,
+      happy: 0,
+      relaxed: 0,
+      lookUp: 0,
+      aa: 0,
+      blink: 0,
+    };
     const scene = new THREE.Scene();
     scene.background = new THREE.Color("#151c2a");
 
@@ -63,6 +80,9 @@ function AvatarView({ onLoaded, onError }: AvatarViewProps) {
         const size = bounds.getSize(new THREE.Vector3());
         const center = bounds.getCenter(new THREE.Vector3());
         vrm.scene.rotation.y = Math.PI;
+        bodyRestRotation = vrm.scene.rotation.clone();
+        head = vrm.humanoid.getNormalizedBoneNode("head");
+        headRestRotation = head?.rotation.clone() ?? null;
         camera.position.set(
           center.x,
           center.y + size.y * 0.08,
@@ -85,7 +105,52 @@ function AvatarView({ onLoaded, onError }: AvatarViewProps) {
     const animate = () => {
       if (disposed) return;
       animationFrame = window.requestAnimationFrame(animate);
-      loadedVrm?.update(clock.getDelta());
+      const delta = clock.getDelta();
+      elapsedSeconds += delta;
+      if (loadedVrm) {
+        const frame = getAvatarAnimationFrame(stateRef.current, elapsedSeconds);
+        const expressionManager = loadedVrm.expressionManager;
+        if (expressionManager) {
+          for (const name of EXPRESSION_NAMES) {
+            currentExpressionWeights[name] = THREE.MathUtils.damp(
+              currentExpressionWeights[name],
+              frame.expressionWeights[name],
+              7,
+              delta,
+            );
+            expressionManager.setValue(name, currentExpressionWeights[name]);
+          }
+        }
+        if (head && headRestRotation) {
+          head.rotation.x = THREE.MathUtils.damp(
+            head.rotation.x,
+            headRestRotation.x + frame.headRotation.x,
+            5,
+            delta,
+          );
+          head.rotation.y = THREE.MathUtils.damp(
+            head.rotation.y,
+            headRestRotation.y + frame.headRotation.y,
+            5,
+            delta,
+          );
+          head.rotation.z = THREE.MathUtils.damp(
+            head.rotation.z,
+            headRestRotation.z + frame.headRotation.z,
+            5,
+            delta,
+          );
+        }
+        if (bodyRestRotation) {
+          loadedVrm.scene.rotation.set(
+            bodyRestRotation.x,
+            bodyRestRotation.y + frame.bodyYaw,
+            bodyRestRotation.z,
+            bodyRestRotation.order,
+          );
+        }
+        loadedVrm.update(delta);
+      }
       renderer.render(scene, camera);
     };
     animate();
@@ -99,7 +164,15 @@ function AvatarView({ onLoaded, onError }: AvatarViewProps) {
     };
   }, [onError, onLoaded]);
 
-  return <div className="avatar-canvas" ref={containerRef} />;
+  return (
+    <div
+      aria-label={`Digital human avatar, ${state} expression`}
+      className="avatar-canvas"
+      data-avatar-state={state}
+      ref={containerRef}
+      role="img"
+    />
+  );
 }
 
 export default AvatarView;

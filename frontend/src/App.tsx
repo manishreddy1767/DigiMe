@@ -1,5 +1,9 @@
-import { FormEvent, useCallback, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import AvatarView from "./avatar/AvatarView";
+import {
+  SPEAKING_DISPLAY_DURATION_MS,
+  type AvatarAnimationState,
+} from "./avatar/avatarAnimation";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -13,8 +17,19 @@ function App() {
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [avatarState, setAvatarState] = useState<AvatarAnimationState>("idle");
   const requestId = useRef(0);
   const activeRequest = useRef<AbortController | null>(null);
+  const speakingTimer = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (speakingTimer.current !== null) {
+        window.clearTimeout(speakingTimer.current);
+      }
+    },
+    [],
+  );
 
   const handleAvatarLoaded = useCallback(() => {
     setAvatarLoaded(true);
@@ -26,14 +41,23 @@ function App() {
     setAvatarError(message);
   }, []);
 
+  const clearSpeakingTimer = () => {
+    if (speakingTimer.current !== null) {
+      window.clearTimeout(speakingTimer.current);
+      speakingTimer.current = null;
+    }
+  };
+
   const startNewConversation = () => {
     requestId.current += 1;
     activeRequest.current?.abort();
     activeRequest.current = null;
+    clearSpeakingTimer();
     setMessages([]);
     setDraft("");
     setError(null);
     setLoading(false);
+    setAvatarState("idle");
   };
 
   const sendMessage = async (event: FormEvent<HTMLFormElement>) => {
@@ -44,11 +68,13 @@ function App() {
     const nextMessages = [...messages, { role: "user" as const, content }];
     const currentRequestId = ++requestId.current;
     const controller = new AbortController();
+    clearSpeakingTimer();
     activeRequest.current = controller;
     setMessages(nextMessages);
     setDraft("");
     setError(null);
     setLoading(true);
+    setAvatarState("thinking");
 
     try {
       const response = await fetch("/api/chat", {
@@ -79,9 +105,17 @@ function App() {
 
       if (currentRequestId === requestId.current) {
         setMessages([...nextMessages, { role: "assistant", content: result.message }]);
+        setAvatarState("speaking");
+        speakingTimer.current = window.setTimeout(() => {
+          if (currentRequestId === requestId.current) {
+            setAvatarState("idle");
+          }
+          speakingTimer.current = null;
+        }, SPEAKING_DISPLAY_DURATION_MS);
       }
     } catch (requestError) {
       if (controller.signal.aborted || currentRequestId !== requestId.current) return;
+      setAvatarState("idle");
       setError(
         requestError instanceof Error
           ? requestError.message
@@ -99,7 +133,7 @@ function App() {
     <main className="shell">
       <header className="header">
         <div>
-          <p className="eyebrow">LOCAL FEASIBILITY CHECK</p>
+          <p className="eyebrow">LOCAL DIGITAL HUMAN</p>
           <h1>Digital Me</h1>
         </div>
         <div className="header-actions">
@@ -113,6 +147,7 @@ function App() {
       <section className="workspace" aria-label="Digital Me chat">
         <div className="avatar-panel">
           <AvatarView
+            state={avatarState}
             onLoaded={handleAvatarLoaded}
             onError={handleAvatarError}
           />
