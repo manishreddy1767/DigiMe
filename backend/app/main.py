@@ -6,7 +6,11 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.services.ollama import OllamaService
 from app.services.speech import get_kokoro_service, get_whisper_service
-from app.services.storage import Database, RecordNotFoundError
+from app.services.storage import (
+    DEFAULT_PERSONALITY,
+    Database,
+    RecordNotFoundError,
+)
 
 app = FastAPI(
     title="Digital Me",
@@ -55,6 +59,29 @@ class ProfileUpdate(BaseModel):
     @classmethod
     def strip_profile_fields(cls, value: str) -> str:
         return value.strip()
+
+
+class PersonalityUpdate(BaseModel):
+    name: str = Field(default=DEFAULT_PERSONALITY["name"], min_length=1, max_length=100)
+    communication_style: Literal["friendly", "professional", "casual"] = Field(
+        default=DEFAULT_PERSONALITY["communication_style"]
+    )
+    response_length: Literal["concise", "balanced", "detailed"] = Field(
+        default=DEFAULT_PERSONALITY["response_length"]
+    )
+    custom_instructions: str = Field(default="", max_length=2_000)
+
+    @field_validator("name", "custom_instructions")
+    @classmethod
+    def strip_personality_fields(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("name")
+    @classmethod
+    def personality_name_must_not_be_blank(cls, value: str) -> str:
+        if not value:
+            raise ValueError("Personality name must not be blank.")
+        return value
 
 
 class MemoryRequest(BaseModel):
@@ -126,6 +153,26 @@ def update_profile(profile: ProfileUpdate) -> dict[str, str]:
         profile.about,
         profile.preferences,
     )
+
+
+@app.get("/api/personality")
+def get_personality() -> dict[str, str]:
+    return Database().get_personality()
+
+
+@app.put("/api/personality")
+def update_personality(personality: PersonalityUpdate) -> dict[str, str]:
+    return Database().update_personality(
+        name=personality.name,
+        communication_style=personality.communication_style,
+        response_length=personality.response_length,
+        custom_instructions=personality.custom_instructions,
+    )
+
+
+@app.post("/api/personality/reset")
+def reset_personality() -> dict[str, str]:
+    return Database().reset_personality()
 
 
 @app.get("/api/memories")

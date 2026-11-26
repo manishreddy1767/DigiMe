@@ -17,6 +17,12 @@ _MEMORY_SEARCH_STOP_WORDS = frozenset(
         "tell",
     }
 )
+DEFAULT_PERSONALITY = {
+    "name": "Digital Me",
+    "communication_style": "friendly",
+    "response_length": "balanced",
+    "custom_instructions": "",
+}
 
 
 class RecordNotFoundError(Exception):
@@ -90,6 +96,16 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
                 INSERT OR IGNORE INTO profile (id, updated_at)
+                    VALUES (1, '');
+                CREATE TABLE IF NOT EXISTS personality (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    name TEXT NOT NULL DEFAULT 'Digital Me',
+                    communication_style TEXT NOT NULL DEFAULT 'friendly',
+                    response_length TEXT NOT NULL DEFAULT 'balanced',
+                    custom_instructions TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
+                INSERT OR IGNORE INTO personality (id, updated_at)
                     VALUES (1, '');
                 CREATE TABLE IF NOT EXISTS memories (
                     id TEXT PRIMARY KEY,
@@ -241,6 +257,40 @@ class Database:
                 "SELECT name, about, preferences, updated_at FROM profile WHERE id = 1"
             ).fetchone()
         return dict(row)
+
+    def get_personality(self) -> dict[str, str]:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT name, communication_style, response_length,
+                       custom_instructions, updated_at
+                FROM personality WHERE id = 1
+                """
+            ).fetchone()
+        return dict(row)
+
+    def update_personality(
+        self,
+        name: str,
+        communication_style: str,
+        response_length: str,
+        custom_instructions: str,
+    ) -> dict[str, str]:
+        now = self._now()
+        with self._connection() as connection:
+            connection.execute(
+                """
+                UPDATE personality
+                SET name = ?, communication_style = ?, response_length = ?,
+                    custom_instructions = ?, updated_at = ?
+                WHERE id = 1
+                """,
+                (name, communication_style, response_length, custom_instructions, now),
+            )
+        return self.get_personality()
+
+    def reset_personality(self) -> dict[str, str]:
+        return self.update_personality(**DEFAULT_PERSONALITY)
 
     def create_memory(self, content: str) -> dict[str, str]:
         memory_id = str(uuid4())
