@@ -8,6 +8,16 @@ from pathlib import Path
 from typing import Iterator
 from uuid import uuid4
 
+_MEMORY_SEARCH_STOP_WORDS = frozenset(
+    {
+        "a", "about", "an", "and", "are", "as", "at", "be", "but", "by",
+        "did", "do", "for", "from", "i", "in", "is", "it", "me", "my",
+        "of", "on", "or", "that", "the", "this", "to", "was", "what",
+        "when", "where", "which", "who", "why", "with", "you", "your",
+        "tell",
+    }
+)
+
 
 class RecordNotFoundError(Exception):
     pass
@@ -258,7 +268,11 @@ class Database:
         return [self._memory_dict(row) for row in rows]
 
     def search_memories(self, query: str, limit: int = 5) -> list[dict[str, str]]:
-        terms = re.findall(r"[\w]{2,}", query, flags=re.UNICODE)
+        terms = [
+            term
+            for term in re.findall(r"[\w]{2,}", query, flags=re.UNICODE)
+            if term.casefold() not in _MEMORY_SEARCH_STOP_WORDS
+        ]
         if not terms:
             return []
         match_expression = " OR ".join(f'"{term}"' for term in dict.fromkeys(terms))

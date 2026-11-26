@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.services.ollama import (
     CONTEXT_SIZE,
+    MAX_ADDITIONAL_CONTEXT_CHARS,
     MAX_CONTEXT_CHARS,
     MODEL,
     OllamaService,
@@ -36,6 +37,20 @@ def test_context_is_bounded_and_keeps_most_recent_messages() -> None:
     assert bounded[-1] == {"role": "user", "content": "x" * 4_000}
     assert sum(len(message["content"]) for message in bounded) <= MAX_CONTEXT_CHARS
     assert len(bounded) <= 1 + 20
+
+
+def test_approved_context_is_bounded_and_preserves_recent_chat() -> None:
+    messages = [{"role": "user", "content": "What do I enjoy?"}]
+
+    bounded = build_bounded_chat_messages(messages, "Profile and memories " * 500)
+
+    assert bounded[0]["role"] == "system"
+    assert "User-approved context:" in bounded[0]["content"]
+    assert len(bounded[0]["content"]) <= len(SYSTEM_PROMPT) + len(
+        "\n\nUser-approved context:\n"
+    ) + MAX_ADDITIONAL_CONTEXT_CHARS
+    assert bounded[-1] == messages[0]
+    assert sum(len(message["content"]) for message in bounded) <= MAX_CONTEXT_CHARS
 
 
 def test_ollama_chat_uses_local_qwen_and_returns_mocked_response() -> None:
@@ -154,6 +169,41 @@ def test_chat_context_is_loaded_from_only_the_selected_conversation(
     assert mocked_chat.call_args_list[2].args[0] == [
         {"role": "user", "content": "Other topic"},
     ]
+
+
+def test_chat_receives_profile_and_only_relevant_approved_memories(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("DIGITAL_ME_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    client.put(
+        "/api/profile",
+        json={"name": "Alex", "about": "", "preferences": "Be concise."},
+    )
+    client.post(
+        "/api/memories",
+        json={"content": "I work at a local library."},
+    )
+    client.post(
+        "/api/memories",
+        json={"content": "My favorite color is green."},
+    )
+
+    with patch(
+        "app.main.OllamaService.generate_chat_response",
+        return_value="You work at a local library.",
+    ) as mocked_chat:
+        response = client.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "Tell me about my library work."}]},
+        )
+
+    assert response.status_code == 200
+    context = mocked_chat.call_args.args[1]
+    assert "Name: Alex" in context
+    assert "Preferences: Be concise." in context
+    assert "I work at a local library." in context
+    assert "favorite color is green" not in context
 
 
 def test_endpoint_returns_gateway_error_and_keeps_user_message(

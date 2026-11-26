@@ -177,8 +177,36 @@ def chat(request: ChatRequest) -> ChatResponse:
         {"role": message["role"], "content": message["content"]}
         for message in conversation["messages"]
     ]
+    profile = database.get_profile()
+    context_sections = []
+    profile_fields = [
+        ("Name", profile["name"]),
+        ("About", profile["about"]),
+        ("Preferences", profile["preferences"]),
+    ]
+    filled_profile = [f"{label}: {value}" for label, value in profile_fields if value]
+    if filled_profile:
+        context_sections.append(
+            "Editable user profile (provided by the user):\n"
+            + "\n".join(filled_profile)
+        )
+
+    relevant_memories = database.search_memories(latest_message.content)
+    if relevant_memories:
+        context_sections.append(
+            "Explicitly approved long-term memories:\n"
+            + "\n".join(f"- {memory['content']}" for memory in relevant_memories)
+        )
+
     try:
-        response = OllamaService().generate_chat_response(messages)
+        ollama = OllamaService()
+        if context_sections:
+            response = ollama.generate_chat_response(
+                messages,
+                "\n\n".join(context_sections),
+            )
+        else:
+            response = ollama.generate_chat_response(messages)
     except RuntimeError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 

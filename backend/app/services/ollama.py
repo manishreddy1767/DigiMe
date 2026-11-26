@@ -9,6 +9,7 @@ MODEL = "qwen3:4b"
 CONTEXT_SIZE = 4096
 MAX_HISTORY_MESSAGES = 20
 MAX_CONTEXT_CHARS = 12_000
+MAX_ADDITIONAL_CONTEXT_CHARS = 3_000
 SYSTEM_PROMPT = (
     "You are Digital Me, a personal AI assistant. Be helpful and conversational. "
     "Do not invent personal facts or experiences; say when you do not know."
@@ -70,8 +71,12 @@ class OllamaService:
             tokens_per_second=tokens_per_second,
         )
 
-    def generate_chat_response(self, messages: list[dict[str, str]]) -> str:
-        bounded_messages = build_bounded_chat_messages(messages)
+    def generate_chat_response(
+        self,
+        messages: list[dict[str, str]],
+        additional_context: str | None = None,
+    ) -> str:
+        bounded_messages = build_bounded_chat_messages(messages, additional_context)
         request_body = {
             "model": MODEL,
             "messages": bounded_messages,
@@ -114,8 +119,15 @@ class OllamaService:
         return text
 
 
-def build_bounded_chat_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
-    remaining_chars = MAX_CONTEXT_CHARS - len(SYSTEM_PROMPT)
+def build_bounded_chat_messages(
+    messages: list[dict[str, str]],
+    additional_context: str | None = None,
+) -> list[dict[str, str]]:
+    context = (additional_context or "").strip()[:MAX_ADDITIONAL_CONTEXT_CHARS]
+    system_message = SYSTEM_PROMPT
+    if context:
+        system_message = f"{SYSTEM_PROMPT}\n\nUser-approved context:\n{context}"
+    remaining_chars = MAX_CONTEXT_CHARS - len(system_message)
     selected: list[dict[str, str]] = []
 
     for message in reversed(messages[-MAX_HISTORY_MESSAGES:]):
@@ -127,4 +139,4 @@ def build_bounded_chat_messages(messages: list[dict[str, str]]) -> list[dict[str
         selected.append({"role": message["role"], "content": content})
         remaining_chars -= len(content)
 
-    return [{"role": "system", "content": SYSTEM_PROMPT}, *reversed(selected)]
+    return [{"role": "system", "content": system_message}, *reversed(selected)]
