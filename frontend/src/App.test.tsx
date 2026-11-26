@@ -292,7 +292,12 @@ describe("chat interface", () => {
     const fetchMock = installAppFetch((path) =>
       Promise.resolve(
         path === "/api/chat"
-          ? jsonResponse({ detail: "Ollama is not available." }, 502)
+          ? jsonResponse({
+              detail: {
+                message: "Ollama is not available.",
+                conversation_id: "failed-conversation",
+              },
+            }, 502)
           : undefined,
       ),
     );
@@ -307,7 +312,11 @@ describe("chat interface", () => {
       "textContent",
       "Ollama is not available.",
     );
-    expect(screen.getByText("Are you there?")).toBeTruthy();
+    expect(document.querySelector(".message.user p")?.textContent).toBe("Are you there?");
+    expect(
+      (screen.getByRole("combobox", { name: "Conversation history" }) as HTMLSelectElement)
+        .value,
+    ).toBe("failed-conversation");
   });
 
   it("generates local speech and maps playback controls to avatar state", async () => {

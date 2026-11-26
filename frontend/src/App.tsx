@@ -68,6 +68,7 @@ function App() {
   const audioMessageIndex = useRef<number | null>(null);
   const transcriptionRequestId = useRef(0);
   const conversationRequestId = useRef(0);
+  const conversationChangedByUser = useRef(false);
   const transcriptionController = useRef<AbortController | null>(null);
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const recordingStream = useRef<MediaStream | null>(null);
@@ -130,8 +131,19 @@ function App() {
             "title" in item &&
             typeof item.title === "string",
         );
-        if (operationId !== conversationRequestId.current) return;
-        setConversations(savedConversations);
+        setConversations((current) => {
+          const currentIds = new Set(current.map((item) => item.id));
+          return [
+            ...current,
+            ...savedConversations.filter((item) => !currentIds.has(item.id)),
+          ];
+        });
+        if (
+          operationId !== conversationRequestId.current ||
+          conversationChangedByUser.current
+        ) {
+          return;
+        }
         const latest = savedConversations[0];
         if (!latest) return;
 
@@ -144,6 +156,7 @@ function App() {
         }
         if (
           operationId !== conversationRequestId.current ||
+          conversationChangedByUser.current ||
           typeof conversationResult !== "object" ||
           conversationResult === null ||
           !("id" in conversationResult) ||
@@ -516,6 +529,7 @@ function App() {
 
   const selectConversation = async (selectedId: string) => {
     if (!selectedId || selectedId === conversationId) return;
+    conversationChangedByUser.current = true;
     const operationId = ++conversationRequestId.current;
     requestId.current += 1;
     activeRequest.current?.abort();
@@ -579,6 +593,7 @@ function App() {
   };
 
   const startNewConversation = async () => {
+    conversationChangedByUser.current = true;
     const operationId = ++conversationRequestId.current;
     requestId.current += 1;
     activeRequest.current?.abort();
@@ -635,6 +650,7 @@ function App() {
 
   const deleteCurrentConversation = async () => {
     if (!conversationId) return;
+    conversationChangedByUser.current = true;
     const deletedId = conversationId;
     const operationId = ++conversationRequestId.current;
     requestId.current += 1;
@@ -684,6 +700,7 @@ function App() {
     const content = draft.trim();
     if (!content || loading) return;
 
+    conversationChangedByUser.current = true;
     conversationRequestId.current += 1;
     stopSpeech();
     const nextMessages = [...messages, { role: "user" as const, content }];
@@ -710,11 +727,36 @@ function App() {
 
       const result: unknown = await response.json();
       if (!response.ok) {
+        const errorDetail =
+          typeof result === "object" && result !== null && "detail" in result &&
+          typeof result.detail === "object" &&
+          result.detail !== null
+            ? result.detail
+            : null;
         const detail =
           typeof result === "object" && result !== null && "detail" in result &&
           typeof result.detail === "string"
             ? result.detail
-            : `Chat request failed (${response.status}).`;
+            : errorDetail !== null &&
+                "message" in errorDetail &&
+                typeof errorDetail.message === "string"
+              ? errorDetail.message
+              : `Chat request failed (${response.status}).`;
+        if (
+          currentRequestId === requestId.current &&
+          errorDetail !== null &&
+          "conversation_id" in errorDetail &&
+          typeof errorDetail.conversation_id === "string"
+        ) {
+          const failedConversationId = errorDetail.conversation_id;
+          const failedTitle = content.replace(/\s+/g, " ").slice(0, 80) ||
+            "New conversation";
+          setConversationId(failedConversationId);
+          setConversations((current) => [
+            { id: failedConversationId, title: failedTitle },
+            ...current.filter((item) => item.id !== failedConversationId),
+          ]);
+        }
         throw new Error(detail);
       }
       if (

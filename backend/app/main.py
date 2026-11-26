@@ -208,7 +208,13 @@ def chat(request: ChatRequest) -> ChatResponse:
         else:
             response = ollama.generate_chat_response(messages)
     except RuntimeError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": str(error),
+                "conversation_id": conversation_id,
+            },
+        ) from error
 
     database.add_message(conversation_id, "assistant", response)
     return ChatResponse(message=response, conversation_id=conversation_id)

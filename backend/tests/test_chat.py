@@ -220,7 +220,8 @@ def test_endpoint_returns_gateway_error_and_keeps_user_message(
         )
 
     assert response.status_code == 502
-    assert response.json()["detail"] == "Could not reach local Ollama."
+    assert response.json()["detail"]["message"] == "Could not reach local Ollama."
+    assert response.json()["detail"]["conversation_id"]
     mocked_chat.assert_called_once_with([{"role": "user", "content": "Hi"}])
     conversations = TestClient(app).get("/api/conversations").json()
     assert len(conversations) == 1
