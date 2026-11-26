@@ -24,16 +24,20 @@ memories.
   temporarily in browser memory and is not saved by the backend.
 - Push-to-talk speech recognition uses faster-whisper `base` on CPU with int8.
   Transcripts appear in the editable message input before they are sent.
-- The speaking expression follows actual audio playback, but is not synchronized
-  to speech sounds or phonemes.
-- No cloud APIs, always-on listening, wake-word detection, voice cloning,
+- Optional automatic speech playback and explicitly started continuous voice
+  conversation reuse the local Kokoro and faster-whisper services.
+- The speaking expression follows audio playback; mouth openness responds to
+  audio amplitude when Web Audio analysis is available. This is not
+  phoneme-level lip synchronization.
+- No cloud APIs, background listening, wake-word detection, voice cloning,
   automatic memory extraction, or remote database.
 
 ## Prerequisites
 
 - Python 3.11+ and Node.js/npm.
 - Ollama running locally.
-- A browser with microphone support; grant permission when prompted.
+- A browser with microphone and Web Audio support; grant permission when
+  prompted.
 - A compatible VRM 1.0 file at `frontend\public\models\avatar.vrm` to display
   the avatar. Model files are local-only and ignored by Git.
 
@@ -147,6 +151,28 @@ transcription** to restore the previous draft. Microphone permission is
 requested only after you start recording. Recordings are held in memory,
 limited to 20 MB, and are not written to disk. The app does not listen in the
 background.
+
+Expand **Voice settings** to enable automatic playback and continuous voice
+conversation. Save settings explicitly. Enabling continuous mode only makes the
+mode available; use **Start voice conversation** to activate the microphone for
+that session. The app does not resume listening after a restart. In this mode,
+recording stops after approximately 0.9 seconds of detected silence following
+speech, then local faster-whisper transcription is sent directly to chat and
+the reply is spoken with Kokoro. If Web Audio silence detection is unavailable,
+stop each utterance manually. **Stop voice conversation** ends the session.
+
+While speech is generating or playing, **Interrupt and listen** cancels the
+current audio and opens the microphone immediately. This is half-duplex
+turn-taking: the microphone is not monitoring while Digital Me speaks. The
+existing push-to-talk controls remain available outside a continuous session;
+their transcript can still be reviewed and edited before sending. If the
+browser blocks automatic playback, the UI reports the error and manual playback
+remains available.
+
+Speech synthesis is limited to 4,000 characters per reply, matching the local
+TTS endpoint limit. Longer replies remain fully available as text and are not
+submitted for synthesis. Raw microphone recordings and generated audio remain
+temporary in memory; voice preferences are stored in the local SQLite database.
 
 Expand **User profile** to edit the name, about text, and response preferences.
 The profile is included with chat context. Expand **Approved long-term
