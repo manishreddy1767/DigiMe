@@ -1,6 +1,6 @@
 # Digital Me
 
-A private, local-first AI digital human. Milestone 2 adds text chat with a local
+A private, local-first AI digital human. It combines text chat with a local
 Ollama model and keeps conversation history only in the current browser session.
 
 ## What works
@@ -10,6 +10,10 @@ Ollama model and keeps conversation history only in the current browser session.
 - Qwen3 4B with a 4K-token context; sent history is bounded to the latest 20
   messages and 12,000 characters, including the system prompt.
 - New-conversation, loading and error states.
+- VRM idle motion and blinking, with thinking and brief speaking expressions
+  driven by chat activity. The avatar supports a happy expression, but chat does
+  not infer or select emotions automatically.
+- Speaking is a visual response cue, not audio-driven lip synchronization.
 - No cloud API, microphone, speech processing, database, or permanent memory.
 
 ## Prerequisites
@@ -56,10 +60,11 @@ Start the frontend from `frontend`:
 npm run dev -- --host 127.0.0.1
 ```
 
-Open the localhost URL printed by Vite. Submit messages in the chat panel;
-follow-up turns include the in-memory browser conversation. **New conversation**
-clears the current messages. Reloading the page also clears them; nothing is
-persisted to disk.
+Open the localhost URL printed by Vite. The chat and avatar appear side by side
+on wider screens and stack on smaller screens. Submit messages in the chat
+panel; follow-up turns include the in-memory browser conversation. **New
+conversation** clears the current messages. Reloading the page also clears
+them; nothing is persisted to disk.
 
 If Ollama is stopped or Qwen3 4B is unavailable, the UI shows the backend error
 and keeps the message visible so you can resend it after fixing the local runtime.
