@@ -75,6 +75,15 @@ function installAppFetch(handler: AppFetchHandler) {
         updated_at: "",
       });
     }
+    if (path === "/api/personality" && (!init?.method || init.method === "GET")) {
+      return jsonResponse({
+        name: "Digital Me",
+        communication_style: "friendly",
+        response_length: "balanced",
+        custom_instructions: "",
+        updated_at: "",
+      });
+    }
     if (path.startsWith("/api/memories") && (!init?.method || init.method === "GET")) {
       return jsonResponse([]);
     }

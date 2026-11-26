@@ -427,6 +427,7 @@ h2 {
 
 .settings-form input,
 .settings-form textarea,
+.settings-form select,
 .memory-search input,
 .memory-list textarea {
   width: 100%;
@@ -464,6 +465,17 @@ h2 {
 .memory-actions button:disabled {
   color: #909aae;
   cursor: not-allowed;
+}
+
+.personality-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-form .personality-actions button:last-child {
+  color: #cbd8ec;
+  background: #202b3b;
 }
 
 .settings-form p,

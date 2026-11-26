@@ -2,6 +2,7 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import AvatarView from "./avatar/AvatarView";
 import type { AvatarAnimationState } from "./avatar/avatarAnimation";
 import MemorySettings from "./MemorySettings";
+import PersonalitySettings from "./PersonalitySettings";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -985,6 +986,9 @@ function App() {
             Conversations stay in local storage. Long-term memories are saved only
             when you approve them below.
           </p>
+          <div className="memory-settings">
+            <PersonalitySettings />
+          </div>
           <MemorySettings />
           <audio
             aria-hidden="true"
