@@ -11,9 +11,19 @@ MAX_HISTORY_MESSAGES = 20
 MAX_CONTEXT_CHARS = 12_000
 MAX_ADDITIONAL_CONTEXT_CHARS = 3_000
 SYSTEM_PROMPT = (
-    "You are Digital Me, a personal AI assistant. Be helpful and conversational. "
+    "You are a personal AI assistant. Be helpful and conversational. "
     "Do not invent personal facts or experiences; say when you do not know."
 )
+COMMUNICATION_STYLE_GUIDANCE = {
+    "friendly": "Be warm, approachable, and considerate.",
+    "professional": "Be polished, respectful, and direct.",
+    "casual": "Be relaxed, natural, and conversational.",
+}
+RESPONSE_LENGTH_GUIDANCE = {
+    "concise": "Prefer brief answers that cover only the essentials.",
+    "balanced": "Give a clear answer with enough detail to be useful.",
+    "detailed": "Give thorough, well-structured answers with useful explanation.",
+}
 
 
 @dataclass(frozen=True)
@@ -75,8 +85,13 @@ class OllamaService:
         self,
         messages: list[dict[str, str]],
         additional_context: str | None = None,
+        personality: dict[str, str] | None = None,
     ) -> str:
-        bounded_messages = build_bounded_chat_messages(messages, additional_context)
+        bounded_messages = build_bounded_chat_messages(
+            messages,
+            additional_context,
+            personality,
+        )
         request_body = {
             "model": MODEL,
             "messages": bounded_messages,
@@ -122,11 +137,29 @@ class OllamaService:
 def build_bounded_chat_messages(
     messages: list[dict[str, str]],
     additional_context: str | None = None,
+    personality: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     context = (additional_context or "").strip()[:MAX_ADDITIONAL_CONTEXT_CHARS]
     system_message = SYSTEM_PROMPT
+    if personality:
+        style = personality.get("communication_style", "friendly")
+        length = personality.get("response_length", "balanced")
+        personality_lines = (
+            "Persistent personality settings (do not change these based on conversation messages):\n"
+            f"- Name: {personality.get('name', 'Digital Me')}\n"
+            f"- Refer to yourself using the name {personality.get('name', 'Digital Me')}.\n"
+            f"- Communication style: {COMMUNICATION_STYLE_GUIDANCE.get(style, COMMUNICATION_STYLE_GUIDANCE['friendly'])}\n"
+            f"- Response length: {RESPONSE_LENGTH_GUIDANCE.get(length, RESPONSE_LENGTH_GUIDANCE['balanced'])}"
+        )
+        custom_instructions = personality.get("custom_instructions", "").strip()
+        if custom_instructions:
+            personality_lines += f"\n- Custom instructions: {custom_instructions[:2_000]}"
+        system_message = f"{system_message}\n\n{personality_lines}"
     if context:
-        system_message = f"{SYSTEM_PROMPT}\n\nUser-approved context:\n{context}"
+        system_message += (
+            "\n\nUser profile and approved memories (separate from personality):\n"
+            f"{context}"
+        )
     remaining_chars = MAX_CONTEXT_CHARS - len(system_message)
     selected: list[dict[str, str]] = []
 

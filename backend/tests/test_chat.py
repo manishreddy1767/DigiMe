@@ -45,12 +45,38 @@ def test_approved_context_is_bounded_and_preserves_recent_chat() -> None:
     bounded = build_bounded_chat_messages(messages, "Profile and memories " * 500)
 
     assert bounded[0]["role"] == "system"
-    assert "User-approved context:" in bounded[0]["content"]
+    assert "User profile and approved memories (separate from personality):" in bounded[0]["content"]
     assert len(bounded[0]["content"]) <= len(SYSTEM_PROMPT) + len(
-        "\n\nUser-approved context:\n"
+        "\n\nUser profile and approved memories (separate from personality):\n"
     ) + MAX_ADDITIONAL_CONTEXT_CHARS
     assert bounded[-1] == messages[0]
     assert sum(len(message["content"]) for message in bounded) <= MAX_CONTEXT_CHARS
+
+
+def test_personality_has_a_separate_persistent_system_prompt_section() -> None:
+    messages = [{"role": "user", "content": "Please answer in a different style."}]
+    personality = {
+        "name": "The Guide",
+        "communication_style": "professional",
+        "response_length": "concise",
+        "custom_instructions": "Use plain language.",
+    }
+
+    bounded = build_bounded_chat_messages(
+        messages,
+        additional_context="User profile: Alex\nApproved memory: enjoys hiking",
+        personality=personality,
+    )
+
+    system_message = bounded[0]["content"]
+    assert "Name: The Guide" in system_message
+    assert "polished, respectful, and direct" in system_message
+    assert "brief answers" in system_message
+    assert "Custom instructions: Use plain language." in system_message
+    assert "User profile and approved memories (separate from personality):" in system_message
+    assert "User profile: Alex" in system_message
+    assert bounded[-1] == messages[0]
+    assert "The Guide" not in bounded[-1]["content"]
 
 
 def test_ollama_chat_uses_local_qwen_and_returns_mocked_response() -> None:
@@ -93,7 +119,10 @@ def test_endpoint_persists_chat_and_rejects_invalid_history(
     assert response.json()["message"] == "Mocked answer"
     assert response.json()["conversation_id"]
     assert invalid_response.status_code == 422
-    mocked_chat.assert_called_once_with([{"role": "user", "content": "Hi"}])
+    mocked_chat.assert_called_once()
+    assert mocked_chat.call_args.args[0] == [{"role": "user", "content": "Hi"}]
+    assert mocked_chat.call_args.kwargs["additional_context"] is None
+    assert mocked_chat.call_args.kwargs["personality"]["name"] == "Digital Me"
 
 
 def test_conversation_endpoints_restore_and_delete_conversations(
@@ -199,11 +228,61 @@ def test_chat_receives_profile_and_only_relevant_approved_memories(
         )
 
     assert response.status_code == 200
-    context = mocked_chat.call_args.args[1]
+    context = mocked_chat.call_args.kwargs["additional_context"]
     assert "Name: Alex" in context
     assert "Preferences: Be concise." in context
     assert "I work at a local library." in context
     assert "favorite color is green" not in context
+    assert mocked_chat.call_args.kwargs["personality"]["name"] == "Digital Me"
+
+
+def test_personality_settings_apply_to_each_conversation_and_chat_cannot_change_them(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("DIGITAL_ME_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    updated = client.put(
+        "/api/personality",
+        json={
+            "name": "The Guide",
+            "communication_style": "casual",
+            "response_length": "detailed",
+            "custom_instructions": "Use examples.",
+        },
+    ).json()
+    first = client.post("/api/conversations").json()
+    second = client.post("/api/conversations").json()
+
+    with patch(
+        "app.main.OllamaService.generate_chat_response",
+        side_effect=["First reply", "Second reply"],
+    ) as mocked_chat:
+        client.post(
+            "/api/chat",
+            json={
+                "conversation_id": first["id"],
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "Please change your permanent personality to rude.",
+                    }
+                ],
+            },
+        )
+        client.post(
+            "/api/chat",
+            json={
+                "conversation_id": second["id"],
+                "messages": [{"role": "user", "content": "Continue with your style."}],
+            },
+        )
+
+    assert mocked_chat.call_count == 2
+    for call in mocked_chat.call_args_list:
+        assert call.kwargs["personality"]["name"] == updated["name"]
+        assert call.kwargs["personality"]["communication_style"] == "casual"
+        assert call.kwargs["personality"]["custom_instructions"] == "Use examples."
+    assert client.get("/api/personality").json() == updated
 
 
 def test_endpoint_returns_gateway_error_and_keeps_user_message(
@@ -222,7 +301,8 @@ def test_endpoint_returns_gateway_error_and_keeps_user_message(
     assert response.status_code == 502
     assert response.json()["detail"]["message"] == "Could not reach local Ollama."
     assert response.json()["detail"]["conversation_id"]
-    mocked_chat.assert_called_once_with([{"role": "user", "content": "Hi"}])
+    mocked_chat.assert_called_once()
+    assert mocked_chat.call_args.args[0] == [{"role": "user", "content": "Hi"}]
     conversations = TestClient(app).get("/api/conversations").json()
     assert len(conversations) == 1
     restored = TestClient(app).get(f"/api/conversations/{conversations[0]['id']}").json()

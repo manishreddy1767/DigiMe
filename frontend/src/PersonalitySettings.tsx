@@ -16,6 +16,14 @@ const DEFAULT_PERSONALITY: Personality = {
   updated_at: "",
 };
 
+function isCommunicationStyle(value: unknown): value is Personality["communication_style"] {
+  return value === "friendly" || value === "professional" || value === "casual";
+}
+
+function isResponseLength(value: unknown): value is Personality["response_length"] {
+  return value === "concise" || value === "balanced" || value === "detailed";
+}
+
 async function readPersonality(response: Response): Promise<Personality> {
   const result: unknown = await response.json();
   if (!response.ok) {
@@ -34,9 +42,9 @@ async function readPersonality(response: Response): Promise<Personality> {
     !("name" in result) ||
     typeof result.name !== "string" ||
     !("communication_style" in result) ||
-    !["friendly", "professional", "casual"].includes(String(result.communication_style)) ||
+    !isCommunicationStyle(result.communication_style) ||
     !("response_length" in result) ||
-    !["concise", "balanced", "detailed"].includes(String(result.response_length)) ||
+    !isResponseLength(result.response_length) ||
     !("custom_instructions" in result) ||
     typeof result.custom_instructions !== "string" ||
     !("updated_at" in result) ||
@@ -46,8 +54,8 @@ async function readPersonality(response: Response): Promise<Personality> {
   }
   return {
     name: result.name,
-    communication_style: result.communication_style as Personality["communication_style"],
-    response_length: result.response_length as Personality["response_length"],
+    communication_style: result.communication_style,
+    response_length: result.response_length,
     custom_instructions: result.custom_instructions,
     updated_at: result.updated_at,
   };
@@ -135,12 +143,12 @@ function PersonalitySettings() {
         <label>
           Communication style
           <select
-            onChange={(event) =>
-              setPersonality({
-                ...personality,
-                communication_style: event.target.value as Personality["communication_style"],
-              })
-            }
+            onChange={(event) => {
+              const { value } = event.target;
+              if (isCommunicationStyle(value)) {
+                setPersonality({ ...personality, communication_style: value });
+              }
+            }}
             value={personality.communication_style}
           >
             <option value="friendly">Friendly</option>
@@ -151,12 +159,12 @@ function PersonalitySettings() {
         <label>
           Response length
           <select
-            onChange={(event) =>
-              setPersonality({
-                ...personality,
-                response_length: event.target.value as Personality["response_length"],
-              })
-            }
+            onChange={(event) => {
+              const { value } = event.target;
+              if (isResponseLength(value)) {
+                setPersonality({ ...personality, response_length: value });
+              }
+            }}
             value={personality.response_length}
           >
             <option value="concise">Concise</option>

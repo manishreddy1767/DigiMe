@@ -246,14 +246,11 @@ def chat(request: ChatRequest) -> ChatResponse:
         )
 
     try:
-        ollama = OllamaService()
-        if context_sections:
-            response = ollama.generate_chat_response(
-                messages,
-                "\n\n".join(context_sections),
-            )
-        else:
-            response = ollama.generate_chat_response(messages)
+        response = OllamaService().generate_chat_response(
+            messages,
+            additional_context="\n\n".join(context_sections) or None,
+            personality=database.get_personality(),
+        )
     except RuntimeError as error:
         raise HTTPException(
             status_code=502,
