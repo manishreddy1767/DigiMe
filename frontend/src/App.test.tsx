@@ -24,8 +24,51 @@ function audioResponse() {
   };
 }
 
+function mockMicrophone(
+  recording = new Blob(["captured speech"], { type: "audio/webm" }),
+  permissionError?: Error,
+) {
+  const track = { stop: vi.fn() };
+  const stream = { getTracks: () => [track] };
+  const getUserMedia = permissionError
+    ? vi.fn().mockRejectedValue(permissionError)
+    : vi.fn().mockResolvedValue(stream);
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: { getUserMedia },
+  });
+
+  let recorder: MockMediaRecorder | null = null;
+  class MockMediaRecorder {
+    state: RecordingState = "inactive";
+    mimeType = "audio/webm;codecs=opus";
+    ondataavailable: ((event: BlobEvent) => void) | null = null;
+    onstop: ((event: Event) => void) | null = null;
+    onerror: ((event: Event) => void) | null = null;
+
+    constructor() {
+      recorder = this;
+    }
+
+    start() {
+      this.state = "recording";
+    }
+
+    stop() {
+      if (this.state === "inactive") return;
+      this.state = "inactive";
+      this.ondataavailable?.({ data: recording } as BlobEvent);
+      this.onstop?.(new Event("stop"));
+    }
+  }
+  vi.stubGlobal("MediaRecorder", MockMediaRecorder);
+
+  return { getUserMedia, track, getRecorder: () => recorder };
+}
+
 const originalCreateObjectURL = URL.createObjectURL;
 const originalRevokeObjectURL = URL.revokeObjectURL;
+const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
 
 beforeEach(() => {
   Object.defineProperty(URL, "createObjectURL", {
@@ -71,6 +114,11 @@ afterEach(() => {
     });
   } else {
     Reflect.deleteProperty(URL, "revokeObjectURL");
+  }
+  if (originalMediaDevices) {
+    Object.defineProperty(navigator, "mediaDevices", originalMediaDevices);
+  } else {
+    Reflect.deleteProperty(navigator, "mediaDevices");
   }
 });
 
@@ -243,5 +291,103 @@ describe("chat interface", () => {
     expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("idle");
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:mock-speech");
     expect(document.querySelector("audio")?.getAttribute("src")).toBeNull();
+  });
+
+  it("transcribes a push-to-talk recording and sends the edited text through chat", async () => {
+    const microphone = mockMicrophone();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ text: "Recognized words." }))
+      .mockResolvedValueOnce(jsonResponse({ message: "I received the edited text." }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+
+    expect(microphone.getUserMedia).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Start recording" }));
+    expect(await screen.findByText("Recording locally. Stop to transcribe.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Stop recording" }));
+
+    expect(await screen.findByText("Review or edit the transcription before sending."))
+      .toBeTruthy();
+    const input = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    expect(input.value).toBe("Recognized words.");
+    fireEvent.change(input, { target: { value: "Edited recognized words." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(await screen.findByText("I received the edited text.")).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/stt");
+    expect(fetchMock.mock.calls[0][1].body).toBeInstanceOf(Blob);
+    expect(fetchMock.mock.calls[0][1].headers["Content-Type"]).toBe(
+      "audio/webm;codecs=opus",
+    );
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string).messages).toEqual([
+      { role: "user", content: "Edited recognized words." },
+    ]);
+    expect(microphone.track.stop).toHaveBeenCalledOnce();
+  });
+
+  it("lets the user discard a transcript and handles denied microphone permission", async () => {
+    const microphone = mockMicrophone();
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ text: "Transcribed words." }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    const input = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(input, { target: { value: "Keep my typed text" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start recording" }));
+    await screen.findByText("Recording locally. Stop to transcribe.");
+    fireEvent.click(screen.getByRole("button", { name: "Stop recording" }));
+    await screen.findByText("Review or edit the transcription before sending.");
+
+    expect((input as HTMLTextAreaElement).value).toBe("Keep my typed text Transcribed words.");
+    fireEvent.click(screen.getByRole("button", { name: "Discard transcription" }));
+    expect((input as HTMLTextAreaElement).value).toBe("Keep my typed text");
+
+    cleanup();
+    const deniedMicrophone = mockMicrophone(
+      undefined,
+      new DOMException("Permission denied.", "NotAllowedError"),
+    );
+    const deniedFetch = vi.fn();
+    vi.stubGlobal("fetch", deniedFetch);
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Start recording" }));
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      "Microphone permission was denied. Allow microphone access and try again.",
+    );
+    expect(deniedMicrophone.getUserMedia).toHaveBeenCalledOnce();
+    expect(deniedFetch).not.toHaveBeenCalled();
+  });
+
+  it("reports empty recordings and local transcription failures", async () => {
+    mockMicrophone(new Blob([], { type: "audio/webm" }));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Start recording" }));
+    await screen.findByText("Recording locally. Stop to transcribe.");
+    fireEvent.click(screen.getByRole("button", { name: "Stop recording" }));
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      "No audio was captured. Record a short message and try again.",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    cleanup();
+    mockMicrophone();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ detail: "Could not load faster-whisper." }, 503),
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Start recording" }));
+    await screen.findByText("Recording locally. Stop to transcribe.");
+    fireEvent.click(screen.getByRole("button", { name: "Stop recording" }));
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      "Could not load faster-whisper.",
+    );
   });
 });
