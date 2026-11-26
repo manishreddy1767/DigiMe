@@ -353,6 +353,133 @@ h2 {
   font-size: 0.75rem;
 }
 
+.memory-settings {
+  display: grid;
+  gap: 8px;
+  padding: 0 18px 12px;
+}
+
+.settings-section {
+  border: 1px solid #293447;
+  border-radius: 10px;
+  background: #141c29;
+}
+
+.settings-section summary {
+  padding: 10px 12px;
+  color: #cbd8ec;
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.settings-form,
+.memory-search {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.settings-form label,
+.memory-search label {
+  color: #aebbd0;
+  font-size: 0.78rem;
+}
+
+.settings-form input,
+.settings-form textarea,
+.memory-search input,
+.memory-list textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #35445a;
+  border-radius: 8px;
+  outline: none;
+  color: #eef2ff;
+  background: #111925;
+  resize: vertical;
+}
+
+.settings-form button,
+.memory-search button,
+.memory-actions button {
+  justify-self: start;
+  padding: 7px 10px;
+  border: 1px solid #40516a;
+  border-radius: 8px;
+  color: #dce8fb;
+  background: #182232;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.settings-form button:not(:disabled):hover,
+.memory-search button:hover,
+.memory-actions button:not(:disabled):hover {
+  border-color: #8eb3f4;
+  background: #253750;
+}
+
+.settings-form button:disabled,
+.memory-actions button:disabled {
+  color: #909aae;
+  cursor: not-allowed;
+}
+
+.settings-form p,
+.settings-note,
+.settings-status,
+.settings-error {
+  margin: 0;
+  color: #9aa8bd;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.settings-note {
+  padding: 0 12px 10px;
+}
+
+.memory-search {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+}
+
+.memory-list {
+  display: grid;
+  gap: 10px;
+  max-height: 280px;
+  overflow: auto;
+  margin: 0;
+  padding: 0 12px 12px;
+  list-style: none;
+}
+
+.memory-list li {
+  display: grid;
+  gap: 7px;
+}
+
+.memory-actions {
+  display: flex;
+  gap: 7px;
+}
+
+.memory-actions .danger-button {
+  color: #ffc5cb;
+  border-color: #7d414b;
+}
+
+.settings-status {
+  color: #8fe0bc;
+}
+
+.settings-error,
+.settings-form [role="alert"] {
+  color: #ffc5cb;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
