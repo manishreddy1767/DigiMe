@@ -68,6 +68,21 @@ cd frontend
 npm ci
 ```
 
+Semantic memory search is optional. To enable it, install the `memory` extra
+and cache the selected `sentence-transformers/all-MiniLM-L6-v2` model once:
+
+```powershell
+cd backend
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[memory]"
+python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device='cpu')"
+```
+
+The one-time model setup fetches model files only. At runtime, embeddings are
+generated locally on the CPU; conversation and memory text is not sent to model
+hosting. If the optional package or cached weights are unavailable, memory
+search and chat retrieval continue with SQLite FTS5.
+
 Ollama model downloads happen locally. Chat requests go only to Ollama at
 `127.0.0.1:11434`; the backend and Vite development server bind to loopback.
 Kokoro inference and faster-whisper transcription run locally on the CPU. On
@@ -141,6 +156,18 @@ automatically. Only approved memories relevant to the current user message are
 added to the bounded local LLM context. Clearing profile fields and saving
 removes those profile values; deleting saved conversations and memories is
 available in the interface.
+
+With the optional memory extra installed and the embedding model cached,
+approved memories use local 384-dimensional MiniLM embeddings plus FTS5 for
+hybrid retrieval. Embeddings are cached with each memory and refreshed when its
+content changes; importance can be adjusted from 1 (low) to 5 (high) and helps
+rank retrieved memories. Saving or editing a memory that resembles another
+shows a warning; the app never merges or deletes memories automatically.
+
+Use **Suggest from current conversation** to ask the local Ollama model for
+possible durable memories. Suggestions remain pending and separate from
+approved memories. Review, set importance, then explicitly approve or dismiss
+each suggestion; nothing is saved as a long-term memory without approval.
 
 ## Tests
 
