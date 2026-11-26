@@ -1,7 +1,8 @@
 # Digital Me
 
 A private, local-first AI digital human. It combines text chat with a local
-Ollama model and keeps conversation history only in the current browser session.
+Ollama model, persistent local conversations, and user-approved long-term
+memories.
 
 ## What works
 
@@ -9,6 +10,10 @@ Ollama model and keeps conversation history only in the current browser session.
 - FastAPI chat endpoint backed by Ollama's local `/api/chat` endpoint.
 - Qwen3 4B with a 4K-token context; sent history is bounded to the latest 20
   messages and 12,000 characters, including the system prompt.
+- SQLite conversation history with separate conversation IDs, restore-on-start,
+  history selection, and conversation deletion.
+- An editable local profile and explicitly approved long-term memories with
+  FTS5 search, editing, deletion, and relevant-memory retrieval.
 - New-conversation, loading and error states.
 - VRM idle motion and blinking, with thinking and brief speaking expressions
   driven by chat activity. The avatar supports a happy expression, but chat does
@@ -20,7 +25,7 @@ Ollama model and keeps conversation history only in the current browser session.
 - The speaking expression follows actual audio playback, but is not synchronized
   to speech sounds or phonemes.
 - No cloud APIs, always-on listening, wake-word detection, voice cloning,
-  database, or permanent memory.
+  automatic memory extraction, or remote database.
 
 ## Prerequisites
 
@@ -65,9 +70,19 @@ Ollama model downloads happen locally. Chat requests go only to Ollama at
 `127.0.0.1:11434`; the backend and Vite development server bind to loopback.
 Kokoro inference and faster-whisper transcription run locally on the CPU. On
 first use, Kokoro and faster-whisper may download model and voice weights into
-the local Hugging Face cache. Only those weights are fetched; conversation text
-and microphone recordings are not sent to model hosts. Later processing uses
-the cached weights.
+the local Hugging Face cache. Only model weights are fetched from model
+hosting; conversation text and microphone recordings are processed by local
+services and are not uploaded. Later processing uses the cached weights.
+
+Conversation history, the editable profile, and approved memories are stored
+in a local SQLite database outside the source repository. By default, the file
+is `%LOCALAPPDATA%\DigitalMe\digital-me.sqlite3` on Windows,
+`~/Library/Application Support/DigitalMe/digital-me.sqlite3` on macOS, or
+`$XDG_DATA_HOME/digital-me/digital-me.sqlite3` (defaulting to
+`~/.local/share/digital-me/digital-me.sqlite3`) on Linux. Set
+`DIGITAL_ME_DATA_DIR` before starting the backend to choose another data
+directory; keep it outside the repository. The database is local but is not
+encrypted by the application.
 
 ## Run the app
 
@@ -85,10 +100,10 @@ npm run dev -- --host 127.0.0.1
 ```
 
 Open the localhost URL printed by Vite. The chat and avatar appear side by side
-on wider screens and stack on smaller screens. Submit messages in the chat
-panel; follow-up turns include the in-memory browser conversation. **New
-conversation** clears the current messages. Reloading the page also clears
-them; nothing is persisted to disk.
+on wider screens and stack on smaller screens. Select a saved conversation to
+restore it, or use **New conversation** to start a separate history. The most
+recent conversation is restored after restarting the application. Delete a
+conversation from the history controls when you no longer want to retain it.
 
 If Ollama is stopped or Qwen3 4B is unavailable, the UI shows the backend error
 and keeps the message visible so you can resend it after fixing the local runtime.
@@ -107,6 +122,15 @@ transcription** to restore the previous draft. Microphone permission is
 requested only after you start recording. Recordings are held in memory,
 limited to 20 MB, and are not written to disk. The app does not listen in the
 background.
+
+Expand **User profile** to edit the name, about text, and response preferences.
+The profile is included with chat context. Expand **Approved long-term
+memories** to enter a fact and explicitly save it, search saved memories, edit
+them, or delete them. No conversation text is extracted into memories
+automatically. Only approved memories relevant to the current user message are
+added to the bounded local LLM context. Clearing profile fields and saving
+removes those profile values; deleting saved conversations and memories is
+available in the interface.
 
 ## Tests
 
