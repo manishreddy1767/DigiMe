@@ -60,7 +60,7 @@ def test_hybrid_retrieval_uses_semantics_fts_and_importance(tmp_path: Path) -> N
     semantic = database.create_memory(
         "A topic with no shared words.",
         importance=3,
-        embedding=struct.pack("<3f", 1, 0, 0),
+        embedding=struct.pack("<3f", 0.8, 0.6, 0),
         embedding_model="test-model",
     )
     lexical = database.create_memory(
@@ -69,10 +69,16 @@ def test_hybrid_retrieval_uses_semantics_fts_and_importance(tmp_path: Path) -> N
         embedding=struct.pack("<3f", 0, 1, 0),
         embedding_model="test-model",
     )
+    important_relevant = database.create_memory(
+        "Another topic with no shared words.",
+        importance=5,
+        embedding=struct.pack("<3f", 0.8, 0.6, 0),
+        embedding_model="test-model",
+    )
     more_important = database.create_memory(
         "Important unrelated note.",
         importance=5,
-        embedding=struct.pack("<3f", 1, 0, 0),
+        embedding=struct.pack("<3f", 0.3, 0.9539392, 0),
         embedding_model="test-model",
     )
 
@@ -87,9 +93,10 @@ def test_hybrid_retrieval_uses_semantics_fts_and_importance(tmp_path: Path) -> N
         "test-model",
     )
 
-    assert results[0]["id"] == more_important["id"]
+    assert results[0]["id"] == important_relevant["id"]
     assert semantic["id"] in [item["id"] for item in results]
     assert lexical["id"] in [item["id"] for item in results]
+    assert more_important["id"] not in [item["id"] for item in results]
     assert fallback[0]["id"] == lexical["id"]
     assert all(item["similarity"] is None for item in fallback)
 

@@ -18,6 +18,7 @@ _MEMORY_SEARCH_STOP_WORDS = frozenset(
         "tell",
     }
 )
+_MIN_MEMORY_SEMANTIC_SIMILARITY = 0.35
 DEFAULT_PERSONALITY = {
     "name": "Digital Me",
     "communication_style": "friendly",
@@ -489,7 +490,7 @@ class Database:
             (
                 (memory_id, score)
                 for memory_id, score in similarities.items()
-                if score >= 0.15
+                if score >= _MIN_MEMORY_SEMANTIC_SIMILARITY
             ),
             key=lambda item: item[1],
             reverse=True,
@@ -512,14 +513,19 @@ class Database:
             similarity = similarities.get(row["id"])
             importance_score = row["importance"] / 5
             if query_embedding is not None:
-                semantic_score = max(similarity or 0.0, 0.0)
+                semantic_score = (
+                    similarity
+                    if similarity is not None
+                    and similarity >= _MIN_MEMORY_SEMANTIC_SIMILARITY
+                    else 0.0
+                )
                 relevance = (
-                    0.65 * semantic_score
+                    0.70 * semantic_score
                     + 0.25 * fts_score
-                    + 0.10 * importance_score
+                    + 0.05 * importance_score
                 )
             else:
-                relevance = 0.8 * fts_score + 0.2 * importance_score
+                relevance = 0.95 * fts_score + 0.05 * importance_score
             ranked.append(
                 {
                     **self._memory_dict(row),

@@ -4,6 +4,12 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.services.chat_context import (
+    build_answerability_guidance,
+    build_memory_search_query,
+    find_conflicting_memory_ids,
+    format_approved_memory_context,
+)
 from app.services.embeddings import EMBEDDING_MODEL, try_embed_text
 from app.services.ollama import OllamaService
 from app.services.speech import get_kokoro_service, get_whisper_service
@@ -390,25 +396,34 @@ def chat(request: ChatRequest) -> ChatResponse:
 
     memories = database.list_memories()
     if memories:
-        query_embedding, _ = try_embed_text(latest_message.content)
+        memory_query = build_memory_search_query(messages)
+        query_embedding, _ = try_embed_text(memory_query)
         relevant_memories = database.search_memories_hybrid(
-            latest_message.content,
+            memory_query,
             query_embedding,
             EMBEDDING_MODEL,
         )
     else:
         relevant_memories = []
+    conflicting_memory_ids = find_conflicting_memory_ids(relevant_memories)
     if relevant_memories:
-        context_sections.append(
-            "Explicitly approved long-term memories:\n"
-            + "\n".join(f"- {memory['content']}" for memory in relevant_memories)
+        memory_context = format_approved_memory_context(
+            relevant_memories,
+            conflicting_memory_ids,
         )
+        if memory_context:
+            context_sections.append(memory_context)
+    chat_guidance = build_answerability_guidance(
+        messages,
+        conflicting_memory_ids,
+    )
 
     try:
         response = OllamaService().generate_chat_response(
             messages,
             additional_context="\n\n".join(context_sections) or None,
             personality=database.get_personality(),
+            chat_guidance=chat_guidance,
         )
     except RuntimeError as error:
         raise HTTPException(

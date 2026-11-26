@@ -79,6 +79,29 @@ def test_personality_has_a_separate_persistent_system_prompt_section() -> None:
     assert "The Guide" not in bounded[-1]["content"]
 
 
+def test_answerability_guidance_does_not_mix_with_personality_or_chat_history() -> None:
+    messages = [{"role": "user", "content": "What is my favorite color?"}]
+    personality = {
+        "name": "The Guide",
+        "communication_style": "professional",
+        "response_length": "concise",
+        "custom_instructions": "Use plain language.",
+    }
+
+    bounded = build_bounded_chat_messages(
+        messages,
+        personality=personality,
+        chat_guidance="Do not guess this personal fact.",
+    )
+
+    system_message = bounded[0]["content"]
+    assert "Answerability check:\nDo not guess this personal fact." in system_message
+    assert "Name: The Guide" in system_message
+    assert "Custom instructions: Use plain language." in system_message
+    assert bounded[-1] == messages[0]
+    assert "Answerability check" not in bounded[-1]["content"]
+
+
 def test_ollama_chat_uses_local_qwen_and_returns_mocked_response() -> None:
     mocked_response = MockResponse(
         json.dumps({"message": {"content": "Hello from the local model."}}).encode()
@@ -271,6 +294,93 @@ def test_chat_receives_profile_and_only_relevant_approved_memories(
     assert "I work at a local library." in context
     assert "favorite color is green" not in context
     assert mocked_chat.call_args.kwargs["personality"]["name"] == "Digital Me"
+
+
+def test_follow_up_retrieval_uses_recent_conversation_context(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("DIGITAL_ME_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "app.main.try_embed_text",
+        lambda text: (None, "Test embeddings unavailable."),
+    )
+    client = TestClient(app)
+    client.post("/api/memories", json={"content": "I work at a local library."})
+
+    with patch(
+        "app.main.OllamaService.generate_chat_response",
+        return_value="You work at a local library.",
+    ) as mocked_chat:
+        response = client.post(
+            "/api/chat",
+            json={
+                "messages": [
+                    {"role": "user", "content": "I work at a local library."},
+                    {"role": "assistant", "content": "Thanks for sharing that."},
+                    {"role": "user", "content": "What about that?"},
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    assert "I work at a local library." in mocked_chat.call_args.kwargs["additional_context"]
+    assert "Resolve references from the recent conversation." in mocked_chat.call_args.kwargs[
+        "chat_guidance"
+    ]
+
+
+def test_unknown_personal_facts_are_guided_without_inventing_profile_or_memory(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("DIGITAL_ME_DATA_DIR", str(tmp_path))
+    with patch(
+        "app.main.OllamaService.generate_chat_response",
+        return_value="I don't know your favorite color yet.",
+    ) as mocked_chat:
+        response = TestClient(app).post(
+            "/api/chat",
+            json={
+                "messages": [
+                    {"role": "user", "content": "What is my favorite color?"}
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    assert mocked_chat.call_args.kwargs["additional_context"] is None
+    assert "say you do not know rather than guessing" in mocked_chat.call_args.kwargs[
+        "chat_guidance"
+    ]
+
+
+def test_conflicting_approved_memories_are_flagged_for_chat(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("DIGITAL_ME_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "app.main.try_embed_text",
+        lambda text: (None, "Test embeddings unavailable."),
+    )
+    client = TestClient(app)
+    client.post("/api/memories", json={"content": "I live in Seattle."})
+    client.post("/api/memories", json={"content": "I live in Portland."})
+
+    with patch(
+        "app.main.OllamaService.generate_chat_response",
+        return_value="I have two saved locations and need to confirm which is current.",
+    ) as mocked_chat:
+        response = client.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "Where do I live?"}]},
+        )
+
+    assert response.status_code == 200
+    context = mocked_chat.call_args.kwargs["additional_context"]
+    assert "[potentially conflicting or outdated] I live in Seattle." in context
+    assert "[potentially conflicting or outdated] I live in Portland." in context
+    assert "Do not silently choose one as certain." in mocked_chat.call_args.kwargs[
+        "chat_guidance"
+    ]
 
 
 def test_personality_settings_apply_to_each_conversation_and_chat_cannot_change_them(
