@@ -4,6 +4,7 @@ from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 from time import perf_counter
+from typing import BinaryIO
 
 KOKORO_CPU_DEVICE = "cpu"
 KOKORO_MODEL_REPO_ID = "hexgrad/Kokoro-82M"
@@ -103,28 +104,58 @@ class WhisperService:
             from faster_whisper import WhisperModel
         except ImportError as error:
             raise RuntimeError(
-                'Install optional speech dependencies with: '
-                'python -m pip install -e ".[feasibility]".'
+                'Install local STT dependencies with: '
+                'python -m pip install -e ".[stt]".'
             ) from error
 
-        self._model = WhisperModel(
-            "base",
-            device="cpu",
-            compute_type="int8",
-            cpu_threads=4,
-        )
+        try:
+            self._model = WhisperModel(
+                "base",
+                device="cpu",
+                compute_type="int8",
+                cpu_threads=4,
+            )
+        except (OSError, RuntimeError) as error:
+            raise RuntimeError(
+                "Could not load the local faster-whisper base model. "
+                "Check that its model files are available in the local cache."
+            ) from error
 
     def transcribe(self, audio_path: Path) -> TranscriptionResult:
         if not audio_path.is_file():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
+        return self._transcribe(str(audio_path))
+
+    def transcribe_bytes(self, audio_data: bytes) -> TranscriptionResult:
+        if not audio_data:
+            raise ValueError("No audio was received.")
+
+        return self._transcribe(BytesIO(audio_data))
+
+    def _transcribe(self, audio: str | BinaryIO) -> TranscriptionResult:
+        try:
+            import av
+        except ImportError as error:
+            raise RuntimeError(
+                'Install local STT dependencies with: '
+                'python -m pip install -e ".[stt]".'
+            ) from error
+
         started = perf_counter()
-        segments, info = self._model.transcribe(
-            str(audio_path),
-            beam_size=1,
-            vad_filter=True,
-        )
-        text = " ".join(segment.text.strip() for segment in segments).strip()
+        try:
+            segments, info = self._model.transcribe(
+                audio,
+                beam_size=1,
+                vad_filter=True,
+            )
+            text = " ".join(segment.text.strip() for segment in segments).strip()
+        except (av.error.FFmpegError, ValueError) as error:
+            raise ValueError(
+                "The recording is empty or uses an unsupported audio format."
+            ) from error
+        except (OSError, RuntimeError) as error:
+            raise RuntimeError("Local speech transcription failed.") from error
         return TranscriptionResult(
             text=text,
             language=info.language,
@@ -135,3 +166,8 @@ class WhisperService:
 @lru_cache(maxsize=1)
 def get_kokoro_service() -> KokoroService:
     return KokoroService()
+
+
+@lru_cache(maxsize=1)
+def get_whisper_service() -> WhisperService:
+    return WhisperService()

@@ -18,6 +18,10 @@ tts = [
     "kokoro>=0.9.4,<1",
     "soundfile>=0.13,<1",
 ]
+stt = [
+    "av>=11,<19",
+    "faster-whisper>=1.1,<2",
+]
 feasibility = [
     "av>=11,<19",
     "faster-whisper>=1.1,<2",
