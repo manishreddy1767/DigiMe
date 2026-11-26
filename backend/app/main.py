@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.services.ollama import OllamaService
 from app.services.speech import get_kokoro_service, get_whisper_service
+from app.services.storage import Database
 
 app = FastAPI(
     title="Digital Me",
@@ -30,6 +31,7 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    conversation_id: str | None = None
     messages: list[ChatMessage] = Field(min_length=1, max_length=40)
 
     @model_validator(mode="after")
@@ -41,6 +43,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     message: str
+    conversation_id: str
 
 
 class TTSRequest(BaseModel):
@@ -63,15 +66,60 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/conversations")
+def list_conversations() -> list[dict[str, str]]:
+    return Database().list_conversations()
+
+
+@app.post("/api/conversations", status_code=201)
+def create_conversation() -> dict[str, str]:
+    return Database().create_conversation()
+
+
+@app.get("/api/conversations/{conversation_id}")
+def get_conversation(conversation_id: str) -> dict[str, object]:
+    conversation = Database().get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return conversation
+
+
+@app.delete("/api/conversations/{conversation_id}", status_code=204)
+def delete_conversation(conversation_id: str) -> Response:
+    if not Database().delete_conversation(conversation_id):
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return Response(status_code=204)
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
-    messages = [message.model_dump() for message in request.messages]
+    database = Database()
+    if request.conversation_id is None:
+        conversation_id = database.create_conversation()["id"]
+    else:
+        conversation_id = request.conversation_id
+        if database.get_conversation(conversation_id) is None:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+
+    latest_message = request.messages[-1]
+    if request.conversation_id is None:
+        for message in request.messages:
+            database.add_message(conversation_id, message.role, message.content)
+    else:
+        database.add_message(conversation_id, latest_message.role, latest_message.content)
+
+    conversation = database.get_conversation(conversation_id)
+    messages = [
+        {"role": message["role"], "content": message["content"]}
+        for message in conversation["messages"]
+    ]
     try:
         response = OllamaService().generate_chat_response(messages)
     except RuntimeError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
-    return ChatResponse(message=response)
+    database.add_message(conversation_id, "assistant", response)
+    return ChatResponse(message=response, conversation_id=conversation_id)
 
 
 @app.post("/api/tts")
