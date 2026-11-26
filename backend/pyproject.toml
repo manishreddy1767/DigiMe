@@ -9,6 +9,7 @@ description = "Local-first Digital Me application foundation"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115,<1",
+    "pydantic>=2.9,<3",
     "uvicorn[standard]>=0.34,<1",
 ]
 
