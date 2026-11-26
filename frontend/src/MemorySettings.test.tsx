@@ -173,18 +173,32 @@ describe("local profile and approved memories", () => {
     expect(await screen.findByText("Similar approved memories found. Review before saving."))
       .toBeTruthy();
     expect(screen.getByText("I enjoy mountain hikes.")).toBeTruthy();
+    fireEvent.change(screen.getByRole("textbox", {
+      name: "Memory to approve and save",
+    }), { target: { value: "I hike on weekends." } });
+    expect(screen.queryByText("Similar approved memories found. Review before saving."))
+      .toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Save approved memory" }));
+    expect(await screen.findByText("Similar approved memories found. Review before saving."))
+      .toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Save anyway" }));
 
     expect(await screen.findByText("Memory saved with your approval.")).toBeTruthy();
     const createCalls = fetchMock.mock.calls.filter(
       ([input, init]) => input === "/api/memories" && init?.method === "POST",
     );
-    expect(createCalls).toHaveLength(2);
+    expect(createCalls).toHaveLength(3);
     expect(JSON.parse(createCalls[0][1]?.body as string)).toMatchObject({
       importance: 4,
       confirm_similar: false,
     });
     expect(JSON.parse(createCalls[1][1]?.body as string)).toMatchObject({
+      content: "I hike on weekends.",
+      importance: 4,
+      confirm_similar: false,
+    });
+    expect(JSON.parse(createCalls[2][1]?.body as string)).toMatchObject({
+      content: "I hike on weekends.",
       importance: 4,
       confirm_similar: true,
     });

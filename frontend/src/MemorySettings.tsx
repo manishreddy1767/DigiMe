@@ -460,7 +460,10 @@ function MemorySettings({ conversationId = null }: { conversationId?: string | n
           <textarea
             id="new-memory"
             maxLength={2000}
-            onChange={(event) => setNewMemory(event.target.value)}
+            onChange={(event) => {
+              setNewMemory(event.target.value);
+              setSimilarWarning(null);
+            }}
             placeholder="Enter a fact you want Digital Me to remember…"
             rows={2}
             value={newMemory}
