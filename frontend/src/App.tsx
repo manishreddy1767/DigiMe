@@ -1,10 +1,20 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import AvatarView from "./avatar/AvatarView";
 import type { AvatarAnimationState } from "./avatar/avatarAnimation";
+import MemorySettings from "./MemorySettings";
 
 type ChatMessage = {
   role: "user" | "assistant";
   content: string;
+};
+
+type ConversationSummary = {
+  id: string;
+  title: string;
+};
+
+type ConversationRecord = ConversationSummary & {
+  messages: ChatMessage[];
 };
 
 type SpeechStatus = "idle" | "generating" | "ready" | "playing" | "paused" | "error";
@@ -39,6 +49,9 @@ function App() {
   const [avatarLoaded, setAvatarLoaded] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversationBusy, setConversationBusy] = useState(false);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +67,7 @@ function App() {
   const audioUrl = useRef<string | null>(null);
   const audioMessageIndex = useRef<number | null>(null);
   const transcriptionRequestId = useRef(0);
+  const conversationRequestId = useRef(0);
   const transcriptionController = useRef<AbortController | null>(null);
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const recordingStream = useRef<MediaStream | null>(null);
@@ -87,6 +101,87 @@ function App() {
       recorder.stop();
     }
     stopStream(recordingStream.current);
+  }, []);
+
+  useEffect(() => {
+    const operationId = ++conversationRequestId.current;
+    void (async () => {
+      try {
+        const response = await fetch("/api/conversations");
+        const result: unknown = await response.json();
+        if (!response.ok) {
+          const detail =
+            typeof result === "object" && result !== null && "detail" in result &&
+            typeof result.detail === "string"
+              ? result.detail
+              : `Could not load conversation history (${response.status}).`;
+          throw new Error(detail);
+        }
+        if (!Array.isArray(result)) {
+          throw new Error("The conversation history response was invalid.");
+        }
+
+        const savedConversations = result.filter(
+          (item): item is ConversationSummary =>
+            typeof item === "object" &&
+            item !== null &&
+            "id" in item &&
+            typeof item.id === "string" &&
+            "title" in item &&
+            typeof item.title === "string",
+        );
+        if (operationId !== conversationRequestId.current) return;
+        setConversations(savedConversations);
+        const latest = savedConversations[0];
+        if (!latest) return;
+
+        const conversationResponse = await fetch(
+          `/api/conversations/${encodeURIComponent(latest.id)}`,
+        );
+        const conversationResult: unknown = await conversationResponse.json();
+        if (!conversationResponse.ok) {
+          throw new Error(`Could not restore conversation (${conversationResponse.status}).`);
+        }
+        if (
+          operationId !== conversationRequestId.current ||
+          typeof conversationResult !== "object" ||
+          conversationResult === null ||
+          !("id" in conversationResult) ||
+          conversationResult.id !== latest.id ||
+          !("messages" in conversationResult) ||
+          !Array.isArray(conversationResult.messages)
+        ) {
+          if (operationId === conversationRequestId.current) {
+            throw new Error("The saved conversation response was invalid.");
+          }
+          return;
+        }
+        const restoredMessages = conversationResult.messages.filter(
+          (item): item is ChatMessage =>
+            typeof item === "object" &&
+            item !== null &&
+            "role" in item &&
+            (item.role === "user" || item.role === "assistant") &&
+            "content" in item &&
+            typeof item.content === "string",
+        );
+        setConversationId(latest.id);
+        setMessages(restoredMessages);
+      } catch (historyError) {
+        if (operationId !== conversationRequestId.current) return;
+        setError(
+          historyError instanceof Error
+            ? historyError.message
+            : "Could not restore local conversation history.",
+        );
+      }
+    })();
+
+    return () => {
+      if (operationId === conversationRequestId.current) {
+        conversationRequestId.current += 1;
+      }
+    };
   }, []);
 
   const handleAvatarLoaded = useCallback(() => {
@@ -419,7 +514,72 @@ function App() {
     }
   };
 
-  const startNewConversation = () => {
+  const selectConversation = async (selectedId: string) => {
+    if (!selectedId || selectedId === conversationId) return;
+    const operationId = ++conversationRequestId.current;
+    requestId.current += 1;
+    activeRequest.current?.abort();
+    activeRequest.current = null;
+    stopSpeech();
+    cancelTranscription();
+    setConversationId(selectedId);
+    setMessages([]);
+    setDraft("");
+    setError(null);
+    setLoading(false);
+    setConversationBusy(true);
+
+    try {
+      const response = await fetch(
+        `/api/conversations/${encodeURIComponent(selectedId)}`,
+      );
+      const result: unknown = await response.json();
+      if (!response.ok) {
+        const detail =
+          typeof result === "object" && result !== null && "detail" in result &&
+          typeof result.detail === "string"
+            ? result.detail
+            : `Could not restore conversation (${response.status}).`;
+        throw new Error(detail);
+      }
+      if (
+        typeof result !== "object" ||
+        result === null ||
+        !("id" in result) ||
+        result.id !== selectedId ||
+        !("messages" in result) ||
+        !Array.isArray(result.messages)
+      ) {
+        throw new Error("The saved conversation response was invalid.");
+      }
+      if (operationId !== conversationRequestId.current) return;
+      const restoredMessages = result.messages.filter(
+        (item): item is ChatMessage =>
+          typeof item === "object" &&
+          item !== null &&
+          "role" in item &&
+          (item.role === "user" || item.role === "assistant") &&
+          "content" in item &&
+          typeof item.content === "string",
+      );
+      setMessages(restoredMessages);
+    } catch (loadError) {
+      if (operationId !== conversationRequestId.current) return;
+      setConversationId(null);
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Could not restore the selected conversation.",
+      );
+    } finally {
+      if (operationId === conversationRequestId.current) {
+        setConversationBusy(false);
+      }
+    }
+  };
+
+  const startNewConversation = async () => {
+    const operationId = ++conversationRequestId.current;
     requestId.current += 1;
     activeRequest.current?.abort();
     activeRequest.current = null;
@@ -429,6 +589,94 @@ function App() {
     setDraft("");
     setError(null);
     setLoading(false);
+    setConversationId(null);
+    setConversationBusy(true);
+    try {
+      const response = await fetch("/api/conversations", { method: "POST" });
+      const result: unknown = await response.json();
+      if (!response.ok) {
+        const detail =
+          typeof result === "object" && result !== null && "detail" in result &&
+          typeof result.detail === "string"
+            ? result.detail
+            : `Could not create a conversation (${response.status}).`;
+        throw new Error(detail);
+      }
+      if (
+        typeof result !== "object" ||
+        result === null ||
+        !("id" in result) ||
+        typeof result.id !== "string" ||
+        !("title" in result) ||
+        typeof result.title !== "string"
+      ) {
+        throw new Error("The conversation service returned an invalid response.");
+      }
+      if (operationId !== conversationRequestId.current) return;
+      const newConversation = { id: result.id, title: result.title };
+      setConversationId(newConversation.id);
+      setConversations((current) => [
+        newConversation,
+        ...current.filter((conversation) => conversation.id !== newConversation.id),
+      ]);
+    } catch (createError) {
+      if (operationId !== conversationRequestId.current) return;
+      setError(
+        createError instanceof Error
+          ? createError.message
+          : "Could not create a local conversation.",
+      );
+    } finally {
+      if (operationId === conversationRequestId.current) {
+        setConversationBusy(false);
+      }
+    }
+  };
+
+  const deleteCurrentConversation = async () => {
+    if (!conversationId) return;
+    const deletedId = conversationId;
+    const operationId = ++conversationRequestId.current;
+    requestId.current += 1;
+    activeRequest.current?.abort();
+    activeRequest.current = null;
+    stopSpeech();
+    cancelTranscription();
+    setConversationBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `/api/conversations/${encodeURIComponent(deletedId)}`,
+        { method: "DELETE" },
+      );
+      if (!response.ok) {
+        const result: unknown = await response.json();
+        const detail =
+          typeof result === "object" && result !== null && "detail" in result &&
+          typeof result.detail === "string"
+            ? result.detail
+            : `Could not delete the conversation (${response.status}).`;
+        throw new Error(detail);
+      }
+      if (operationId !== conversationRequestId.current) return;
+      setConversations((current) =>
+        current.filter((conversation) => conversation.id !== deletedId),
+      );
+      setConversationId(null);
+      setMessages([]);
+      setDraft("");
+    } catch (deleteError) {
+      if (operationId !== conversationRequestId.current) return;
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : "Could not delete the local conversation.",
+      );
+    } finally {
+      if (operationId === conversationRequestId.current) {
+        setConversationBusy(false);
+      }
+    }
   };
 
   const sendMessage = async (event: FormEvent<HTMLFormElement>) => {
@@ -436,6 +684,7 @@ function App() {
     const content = draft.trim();
     if (!content || loading) return;
 
+    conversationRequestId.current += 1;
     stopSpeech();
     const nextMessages = [...messages, { role: "user" as const, content }];
     const currentRequestId = ++requestId.current;
@@ -452,7 +701,10 @@ function App() {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: nextMessages }),
+        body: JSON.stringify({
+          conversation_id: conversationId,
+          messages: [{ role: "user", content }],
+        }),
         signal: controller.signal,
       });
 
@@ -470,12 +722,27 @@ function App() {
         result === null ||
         !("message" in result) ||
         typeof result.message !== "string" ||
-        !result.message.trim()
+        !result.message.trim() ||
+        !("conversation_id" in result) ||
+        typeof result.conversation_id !== "string"
       ) {
         throw new Error("The chat service returned an invalid response.");
       }
 
       if (currentRequestId === requestId.current) {
+        const savedConversationId = result.conversation_id;
+        const savedTitle = content.replace(/\s+/g, " ").slice(0, 80) || "New conversation";
+        setConversationId(savedConversationId);
+        setConversations((current) => [
+          {
+            id: savedConversationId,
+            title: current.find((item) => item.id === savedConversationId)?.title ===
+              "New conversation"
+              ? savedTitle
+              : current.find((item) => item.id === savedConversationId)?.title ?? savedTitle,
+          },
+          ...current.filter((item) => item.id !== savedConversationId),
+        ]);
         setMessages([...nextMessages, { role: "assistant", content: result.message }]);
       }
     } catch (requestError) {
@@ -502,8 +769,13 @@ function App() {
         </div>
         <div className="header-actions">
           <span className="privacy-badge">Local-only</span>
-          <button className="new-conversation" onClick={startNewConversation} type="button">
-            New conversation
+          <button
+            className="new-conversation"
+            disabled={conversationBusy}
+            onClick={() => void startNewConversation()}
+            type="button"
+          >
+            {conversationBusy ? "Loading…" : "New conversation"}
           </button>
         </div>
       </header>
@@ -522,8 +794,34 @@ function App() {
         </div>
 
         <section className="chat-panel" aria-label="Conversation">
+          <div className="conversation-controls">
+            <label htmlFor="saved-conversations">Conversation history</label>
+            <select
+              disabled={conversationBusy}
+              id="saved-conversations"
+              onChange={(event) => void selectConversation(event.target.value)}
+              value={conversationId ?? ""}
+            >
+              <option value="">Current draft</option>
+              {conversations.map((conversation) => (
+                <option key={conversation.id} value={conversation.id}>
+                  {conversation.title}
+                </option>
+              ))}
+            </select>
+            <button
+              className="danger-button"
+              disabled={conversationBusy || !conversationId}
+              onClick={() => void deleteCurrentConversation()}
+              type="button"
+            >
+              Delete conversation
+            </button>
+          </div>
           <div className="messages" role="log" aria-live="polite" aria-relevant="additions">
-            {messages.length === 0 ? (
+            {messages.length === 0 && conversationBusy ? (
+              <p className="empty-state" role="status">Loading local conversation…</p>
+            ) : messages.length === 0 ? (
               <p className="empty-state">Send a message to start a conversation.</p>
             ) : (
               messages.map((message, index) => (
@@ -627,7 +925,7 @@ function App() {
             <label className="sr-only" htmlFor="chat-message">Message</label>
             <textarea
               id="chat-message"
-              disabled={speechInputBusy}
+              disabled={speechInputBusy || conversationBusy}
               maxLength={4000}
               onChange={(event) => setDraft(event.target.value)}
               placeholder="Write a message…"
@@ -635,13 +933,17 @@ function App() {
               value={draft}
             />
             <button
-              disabled={loading || speechInputBusy || !draft.trim()}
+              disabled={loading || speechInputBusy || conversationBusy || !draft.trim()}
               type="submit"
             >
               {loading ? "Thinking…" : "Send"}
             </button>
           </form>
-          <p className="chat-note">Conversation history stays in this page and clears with a new conversation.</p>
+          <p className="chat-note">
+            Conversations stay in local storage. Long-term memories are saved only
+            when you approve them below.
+          </p>
+          <MemorySettings />
           <audio
             aria-hidden="true"
             hidden

@@ -24,6 +24,70 @@ function audioResponse() {
   };
 }
 
+type TestResponse = {
+  ok: boolean;
+  status: number;
+  json?: () => Promise<unknown>;
+  blob?: () => Promise<Blob>;
+};
+
+type AppFetchHandler = (
+  path: string,
+  init?: RequestInit,
+) => Promise<TestResponse | undefined>;
+
+function installAppFetch(handler: AppFetchHandler) {
+  let newConversationId = 0;
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    const customResponse = await handler(path, init);
+    if (customResponse) {
+      if (path === "/api/chat" && customResponse.ok && customResponse.json) {
+        const body = await customResponse.json();
+        if (typeof body === "object" && body !== null && "message" in body) {
+          return jsonResponse({
+            ...body,
+            conversation_id:
+              "conversation_id" in body && typeof body.conversation_id === "string"
+                ? body.conversation_id
+                : "conversation-from-chat",
+          });
+        }
+      }
+      return customResponse;
+    }
+
+    if (path === "/api/conversations" && (!init?.method || init.method === "GET")) {
+      return jsonResponse([]);
+    }
+    if (path === "/api/conversations" && init?.method === "POST") {
+      newConversationId += 1;
+      return jsonResponse({
+        id: `created-conversation-${newConversationId}`,
+        title: "New conversation",
+      });
+    }
+    if (path === "/api/profile" && (!init?.method || init.method === "GET")) {
+      return jsonResponse({
+        name: "",
+        about: "",
+        preferences: "",
+        updated_at: "",
+      });
+    }
+    if (path.startsWith("/api/memories") && (!init?.method || init.method === "GET")) {
+      return jsonResponse([]);
+    }
+    throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+function callsFor(fetchMock: ReturnType<typeof installAppFetch>, path: string) {
+  return fetchMock.mock.calls.filter(([input]) => String(input) === path);
+}
+
 function mockMicrophone(
   recording = new Blob(["captured speech"], { type: "audio/webm" }),
   permissionError?: Error,
@@ -123,11 +187,55 @@ afterEach(() => {
 });
 
 describe("chat interface", () => {
+  it("restores the latest saved conversation and lets the user switch histories", async () => {
+    const fetchMock = installAppFetch((path) => {
+      if (path === "/api/conversations") {
+        return Promise.resolve(jsonResponse([
+          { id: "latest", title: "Latest chat" },
+          { id: "older", title: "Older chat" },
+        ]));
+      }
+      if (path === "/api/conversations/latest") {
+        return Promise.resolve(jsonResponse({
+          id: "latest",
+          title: "Latest chat",
+          messages: [
+            { id: 1, role: "user", content: "Latest question" },
+            { id: 2, role: "assistant", content: "Latest answer" },
+          ],
+        }));
+      }
+      if (path === "/api/conversations/older") {
+        return Promise.resolve(jsonResponse({
+          id: "older",
+          title: "Older chat",
+          messages: [{ id: 3, role: "user", content: "Older question" }],
+        }));
+      }
+      return Promise.resolve(undefined);
+    });
+    render(<App />);
+
+    expect(await screen.findByText("Latest question")).toBeTruthy();
+    expect(screen.getByText("Latest answer")).toBeTruthy();
+    fireEvent.change(screen.getByRole("combobox", { name: "Conversation history" }), {
+      target: { value: "older" },
+    });
+
+    expect(await screen.findByText("Older question")).toBeTruthy();
+    expect(screen.queryByText("Latest question")).toBeNull();
+    expect(callsFor(fetchMock, "/api/conversations/latest")).toHaveLength(1);
+    expect(callsFor(fetchMock, "/api/conversations/older")).toHaveLength(1);
+  });
+
   it("sends a message, shows the reply and includes it in follow-up context", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ message: "Hello from mocked Ollama." }))
-      .mockResolvedValueOnce(jsonResponse({ message: "A contextual follow-up." }));
-    vi.stubGlobal("fetch", fetchMock);
+    const responses = [
+      jsonResponse({ message: "Hello from mocked Ollama." }),
+      jsonResponse({ message: "A contextual follow-up." }),
+    ];
+    const fetchMock = installAppFetch((path) =>
+      Promise.resolve(path === "/api/chat" ? responses.shift() : undefined),
+    );
     render(<App />);
 
     expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("idle");
@@ -143,23 +251,24 @@ describe("chat interface", () => {
 
     expect(await screen.findByText("A contextual follow-up.")).toBeTruthy();
     expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("idle");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const secondRequest = JSON.parse(fetchMock.mock.calls[1][1].body as string);
+    const chatCalls = callsFor(fetchMock, "/api/chat");
+    expect(chatCalls).toHaveLength(2);
+    const secondRequest = JSON.parse(chatCalls[1][1]?.body as string);
+    expect(secondRequest.conversation_id).toBe("conversation-from-chat");
     expect(secondRequest.messages).toEqual([
-      { role: "user", content: "Hello" },
-      { role: "assistant", content: "Hello from mocked Ollama." },
       { role: "user", content: "Continue" },
     ]);
   });
 
   it("shows loading state, and a new conversation ignores an in-flight reply", async () => {
     let resolveRequest!: (response: ReturnType<typeof jsonResponse>) => void;
-    const fetchMock = vi.fn().mockReturnValue(
-      new Promise<ReturnType<typeof jsonResponse>>((resolve) => {
-        resolveRequest = resolve;
-      }),
+    const fetchMock = installAppFetch((path) =>
+      path === "/api/chat"
+        ? new Promise<ReturnType<typeof jsonResponse>>((resolve) => {
+            resolveRequest = resolve;
+          })
+        : Promise.resolve(undefined),
     );
-    vi.stubGlobal("fetch", fetchMock);
     render(<App />);
 
     fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
@@ -170,7 +279,7 @@ describe("chat interface", () => {
     expect(screen.getByText("Digital Me is thinking…")).toBeTruthy();
     expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("thinking");
     fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
-    expect(screen.getByText("Send a message to start a conversation.")).toBeTruthy();
+    expect(await screen.findByText("Send a message to start a conversation.")).toBeTruthy();
     expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("idle");
 
     await act(async () => {
@@ -180,10 +289,13 @@ describe("chat interface", () => {
   });
 
   it("shows backend errors without losing the user's message", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ detail: "Ollama is not available." }, 502),
+    const fetchMock = installAppFetch((path) =>
+      Promise.resolve(
+        path === "/api/chat"
+          ? jsonResponse({ detail: "Ollama is not available." }, 502)
+          : undefined,
+      ),
     );
-    vi.stubGlobal("fetch", fetchMock);
     render(<App />);
 
     fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
@@ -203,10 +315,15 @@ describe("chat interface", () => {
     const pendingSpeech = new Promise<ReturnType<typeof audioResponse>>((resolve) => {
       resolveSpeech = resolve;
     });
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ message: "A local spoken reply." }))
-      .mockReturnValueOnce(pendingSpeech);
-    vi.stubGlobal("fetch", fetchMock);
+    let chatResponseUsed = false;
+    const fetchMock = installAppFetch((path) => {
+      if (path === "/api/chat" && !chatResponseUsed) {
+        chatResponseUsed = true;
+        return Promise.resolve(jsonResponse({ message: "A local spoken reply." }));
+      }
+      if (path === "/api/tts") return pendingSpeech;
+      return Promise.resolve(undefined);
+    });
     render(<App />);
 
     fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
@@ -222,8 +339,8 @@ describe("chat interface", () => {
       resolveSpeech(audioResponse());
     });
     expect(await screen.findByText("Audio ready.")).toBeTruthy();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toEqual({
+    expect(callsFor(fetchMock, "/api/chat")).toHaveLength(1);
+    expect(JSON.parse(callsFor(fetchMock, "/api/tts")[0][1]?.body as string)).toEqual({
       text: "A local spoken reply.",
     });
     expect(document.querySelectorAll("audio")).toHaveLength(1);
@@ -247,10 +364,15 @@ describe("chat interface", () => {
   });
 
   it("shows a local TTS error without breaking the chat response", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ message: "Text remains available." }))
-      .mockResolvedValueOnce(jsonResponse({ detail: "Kokoro is unavailable." }, 503));
-    vi.stubGlobal("fetch", fetchMock);
+    const fetchMock = installAppFetch((path) => {
+      if (path === "/api/chat") {
+        return Promise.resolve(jsonResponse({ message: "Text remains available." }));
+      }
+      if (path === "/api/tts") {
+        return Promise.resolve(jsonResponse({ detail: "Kokoro is unavailable." }, 503));
+      }
+      return Promise.resolve(undefined);
+    });
     render(<App />);
 
     fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
@@ -269,10 +391,11 @@ describe("chat interface", () => {
   });
 
   it("stops active playback when starting a new conversation", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ message: "Speech to stop." }))
-      .mockResolvedValueOnce(audioResponse());
-    vi.stubGlobal("fetch", fetchMock);
+    const fetchMock = installAppFetch((path) => {
+      if (path === "/api/chat") return Promise.resolve(jsonResponse({ message: "Speech to stop." }));
+      if (path === "/api/tts") return Promise.resolve(audioResponse());
+      return Promise.resolve(undefined);
+    });
     render(<App />);
 
     fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
@@ -287,7 +410,7 @@ describe("chat interface", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
 
-    expect(screen.getByText("Send a message to start a conversation.")).toBeTruthy();
+    expect(await screen.findByText("Send a message to start a conversation.")).toBeTruthy();
     expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("idle");
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:mock-speech");
     expect(document.querySelector("audio")?.getAttribute("src")).toBeNull();
@@ -295,10 +418,13 @@ describe("chat interface", () => {
 
   it("transcribes a push-to-talk recording and sends the edited text through chat", async () => {
     const microphone = mockMicrophone();
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ text: "Recognized words." }))
-      .mockResolvedValueOnce(jsonResponse({ message: "I received the edited text." }));
-    vi.stubGlobal("fetch", fetchMock);
+    const fetchMock = installAppFetch((path) => {
+      if (path === "/api/stt") return Promise.resolve(jsonResponse({ text: "Recognized words." }));
+      if (path === "/api/chat") {
+        return Promise.resolve(jsonResponse({ message: "I received the edited text." }));
+      }
+      return Promise.resolve(undefined);
+    });
     render(<App />);
 
     expect(microphone.getUserMedia).not.toHaveBeenCalled();
@@ -314,24 +440,26 @@ describe("chat interface", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(await screen.findByText("I received the edited text.")).toBeTruthy();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/stt");
-    expect(fetchMock.mock.calls[0][1].body).toBeInstanceOf(Blob);
-    expect(fetchMock.mock.calls[0][1].headers["Content-Type"]).toBe(
+    const sttCall = callsFor(fetchMock, "/api/stt")[0];
+    const chatCall = callsFor(fetchMock, "/api/chat")[0];
+    expect(sttCall[1]?.body).toBeInstanceOf(Blob);
+    expect(new Headers(sttCall[1]?.headers).get("Content-Type")).toBe(
       "audio/webm;codecs=opus",
     );
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string).messages).toEqual([
+    expect(JSON.parse(chatCall[1]?.body as string).messages).toEqual([
       { role: "user", content: "Edited recognized words." },
     ]);
+    expect(JSON.parse(chatCall[1]?.body as string).conversation_id).toBeNull();
     expect(microphone.track.stop).toHaveBeenCalledOnce();
   });
 
   it("lets the user discard a transcript and handles denied microphone permission", async () => {
     const microphone = mockMicrophone();
-    const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ text: "Transcribed words." }),
+    installAppFetch((path) =>
+      Promise.resolve(
+        path === "/api/stt" ? jsonResponse({ text: "Transcribed words." }) : undefined,
+      ),
     );
-    vi.stubGlobal("fetch", fetchMock);
     render(<App />);
     const input = screen.getByRole("textbox", { name: "Message" });
     fireEvent.change(input, { target: { value: "Keep my typed text" } });
@@ -349,8 +477,7 @@ describe("chat interface", () => {
       undefined,
       new DOMException("Permission denied.", "NotAllowedError"),
     );
-    const deniedFetch = vi.fn();
-    vi.stubGlobal("fetch", deniedFetch);
+    const deniedFetch = installAppFetch(() => Promise.resolve(undefined));
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Start recording" }));
     expect(await screen.findByRole("alert")).toHaveProperty(
@@ -358,13 +485,13 @@ describe("chat interface", () => {
       "Microphone permission was denied. Allow microphone access and try again.",
     );
     expect(deniedMicrophone.getUserMedia).toHaveBeenCalledOnce();
-    expect(deniedFetch).not.toHaveBeenCalled();
+    expect(callsFor(deniedFetch, "/api/stt")).toHaveLength(0);
+    expect(callsFor(deniedFetch, "/api/chat")).toHaveLength(0);
   });
 
   it("reports empty recordings and local transcription failures", async () => {
     mockMicrophone(new Blob([], { type: "audio/webm" }));
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+    const fetchMock = installAppFetch(() => Promise.resolve(undefined));
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: "Start recording" }));
@@ -374,12 +501,16 @@ describe("chat interface", () => {
       "textContent",
       "No audio was captured. Record a short message and try again.",
     );
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(callsFor(fetchMock, "/api/stt")).toHaveLength(0);
 
     cleanup();
     mockMicrophone();
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({ detail: "Could not load faster-whisper." }, 503),
+    const failedFetch = installAppFetch((path) =>
+      Promise.resolve(
+        path === "/api/stt"
+          ? jsonResponse({ detail: "Could not load faster-whisper." }, 503)
+          : undefined,
+      ),
     );
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Start recording" }));

@@ -167,6 +167,45 @@ h2 {
   background: #171f2d;
 }
 
+.conversation-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px 10px;
+  padding: 14px 18px 0;
+}
+
+.conversation-controls label {
+  grid-column: 1 / -1;
+  color: #aebbd0;
+  font-size: 0.78rem;
+}
+
+.conversation-controls select {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #35445a;
+  border-radius: 8px;
+  color: #eef2ff;
+  background: #111925;
+}
+
+.conversation-controls button {
+  padding: 8px 10px;
+  border: 1px solid #7d414b;
+  border-radius: 8px;
+  color: #ffc5cb;
+  background: #2b1d27;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.conversation-controls button:disabled {
+  color: #909aae;
+  border-color: #40516a;
+  cursor: not-allowed;
+}
+
 .messages {
   display: flex;
   flex: 1;
