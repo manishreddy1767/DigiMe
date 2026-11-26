@@ -271,6 +271,45 @@ h2 {
   background: #3a2028;
 }
 
+.recording-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 18px 0;
+}
+
+.recording-controls button {
+  padding: 8px 11px;
+  border: 1px solid #40516a;
+  border-radius: 8px;
+  color: #dce8fb;
+  background: #182232;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.recording-controls button:not(:disabled):hover {
+  border-color: #8eb3f4;
+  background: #253750;
+}
+
+.recording-controls button:disabled {
+  color: #909aae;
+  cursor: wait;
+}
+
+.recording-controls p {
+  flex-basis: 100%;
+  margin: 0;
+  color: #9aa8bd;
+  font-size: 0.8rem;
+}
+
+.recording-controls [role="alert"] {
+  color: #ffc5cb;
+}
+
 .composer {
   display: flex;
   align-items: flex-end;

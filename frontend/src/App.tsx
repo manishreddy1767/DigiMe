@@ -15,11 +15,25 @@ type SpeechState = {
   error: string | null;
 };
 
+type TranscriptionStatus =
+  | "idle"
+  | "requesting"
+  | "recording"
+  | "transcribing"
+  | "transcribed"
+  | "error";
+
 const IDLE_SPEECH_STATE: SpeechState = {
   status: "idle",
   messageIndex: null,
   error: null,
 };
+
+const MAX_RECORDING_BYTES = 20 * 1024 * 1024;
+
+function stopStream(stream: MediaStream | null) {
+  stream?.getTracks().forEach((track) => track.stop());
+}
 
 function App() {
   const [avatarLoaded, setAvatarLoaded] = useState(false);
@@ -29,6 +43,9 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [speech, setSpeech] = useState<SpeechState>(IDLE_SPEECH_STATE);
+  const [transcriptionStatus, setTranscriptionStatus] =
+    useState<TranscriptionStatus>("idle");
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
   const requestId = useRef(0);
   const activeRequest = useRef<AbortController | null>(null);
   const speechRequestId = useRef(0);
@@ -36,11 +53,22 @@ function App() {
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioUrl = useRef<string | null>(null);
   const audioMessageIndex = useRef<number | null>(null);
+  const transcriptionRequestId = useRef(0);
+  const transcriptionController = useRef<AbortController | null>(null);
+  const mediaRecorder = useRef<MediaRecorder | null>(null);
+  const recordingStream = useRef<MediaStream | null>(null);
+  const recordingChunks = useRef<Blob[]>([]);
+  const recordingBytes = useRef(0);
+  const recordingTooLarge = useRef(false);
+  const draftBeforeRecording = useRef("");
   const avatarState: AvatarAnimationState = loading
     ? "thinking"
     : speech.status === "playing"
       ? "speaking"
       : "idle";
+  const speechInputBusy = ["requesting", "recording", "transcribing"].includes(
+    transcriptionStatus,
+  );
 
   useEffect(() => () => {
     speechRequestId.current += 1;
@@ -49,6 +77,16 @@ function App() {
     if (audioUrl.current !== null) {
       URL.revokeObjectURL(audioUrl.current);
     }
+    transcriptionRequestId.current += 1;
+    transcriptionController.current?.abort();
+    const recorder = mediaRecorder.current;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.ondataavailable = null;
+      recorder.onstop = null;
+      recorder.onerror = null;
+      recorder.stop();
+    }
+    stopStream(recordingStream.current);
   }, []);
 
   const handleAvatarLoaded = useCallback(() => {
@@ -81,6 +119,217 @@ function App() {
     speechController.current = null;
     clearAudio();
     setSpeech(IDLE_SPEECH_STATE);
+  };
+
+  const transcribeRecording = async (recording: Blob, operationId: number) => {
+    const controller = new AbortController();
+    transcriptionController.current = controller;
+    setTranscriptionStatus("transcribing");
+
+    try {
+      const response = await fetch("/api/stt", {
+        method: "POST",
+        headers: {
+          "Content-Type": recording.type || "application/octet-stream",
+        },
+        body: recording,
+        signal: controller.signal,
+      });
+
+      const result: unknown = await response.json();
+      if (!response.ok) {
+        const detail =
+          typeof result === "object" && result !== null && "detail" in result &&
+          typeof result.detail === "string"
+            ? result.detail
+            : `Transcription failed (${response.status}).`;
+        throw new Error(detail);
+      }
+      if (
+        typeof result !== "object" ||
+        result === null ||
+        !("text" in result) ||
+        typeof result.text !== "string"
+      ) {
+        throw new Error("The speech service returned an invalid transcription.");
+      }
+      if (operationId !== transcriptionRequestId.current) return;
+
+      const text = result.text.trim();
+      if (!text) {
+        setTranscriptionStatus("error");
+        setTranscriptionError("No speech was recognized. Try recording again.");
+        return;
+      }
+
+      const previousDraft = draftBeforeRecording.current.trim();
+      setDraft(previousDraft ? `${previousDraft} ${text}` : text);
+      setTranscriptionStatus("transcribed");
+      setTranscriptionError(null);
+    } catch (requestError) {
+      if (controller.signal.aborted || operationId !== transcriptionRequestId.current) return;
+      setTranscriptionStatus("error");
+      setTranscriptionError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Local transcription failed. Please try again.",
+      );
+    } finally {
+      if (operationId === transcriptionRequestId.current) {
+        transcriptionController.current = null;
+      }
+    }
+  };
+
+  const startRecording = async () => {
+    if (
+      transcriptionStatus === "requesting" ||
+      transcriptionStatus === "recording" ||
+      transcriptionStatus === "transcribing"
+    ) {
+      return;
+    }
+    if (
+      !navigator.mediaDevices ||
+      typeof navigator.mediaDevices.getUserMedia !== "function" ||
+      typeof MediaRecorder === "undefined"
+    ) {
+      setTranscriptionStatus("error");
+      setTranscriptionError("Microphone recording is not supported in this browser.");
+      return;
+    }
+
+    const operationId = ++transcriptionRequestId.current;
+    draftBeforeRecording.current = draft;
+    recordingChunks.current = [];
+    recordingBytes.current = 0;
+    recordingTooLarge.current = false;
+    setTranscriptionStatus("requesting");
+    setTranscriptionError(null);
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (operationId !== transcriptionRequestId.current) {
+        stopStream(stream);
+        return;
+      }
+
+      recordingStream.current = stream;
+      const recorder = new MediaRecorder(stream);
+      mediaRecorder.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (operationId !== transcriptionRequestId.current || recordingTooLarge.current) return;
+        if (event.data.size === 0) return;
+        if (recordingBytes.current + event.data.size > MAX_RECORDING_BYTES) {
+          recordingTooLarge.current = true;
+          if (recorder.state === "recording") recorder.stop();
+          return;
+        }
+        recordingBytes.current += event.data.size;
+        recordingChunks.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        stopStream(recordingStream.current);
+        recordingStream.current = null;
+        if (mediaRecorder.current === recorder) mediaRecorder.current = null;
+        if (operationId !== transcriptionRequestId.current) return;
+        if (recordingTooLarge.current) {
+          recordingChunks.current = [];
+          setTranscriptionStatus("error");
+          setTranscriptionError("Recording exceeded the 20 MB limit. Record a shorter clip.");
+          return;
+        }
+
+        const chunks = recordingChunks.current;
+        recordingChunks.current = [];
+        recordingBytes.current = 0;
+        const recording = new Blob(chunks, {
+          type: recorder.mimeType || chunks[0]?.type || "application/octet-stream",
+        });
+        if (recording.size === 0) {
+          setTranscriptionStatus("error");
+          setTranscriptionError("No audio was captured. Record a short message and try again.");
+          return;
+        }
+        void transcribeRecording(recording, operationId);
+      };
+      recorder.onerror = () => {
+        if (operationId !== transcriptionRequestId.current) return;
+        transcriptionRequestId.current += 1;
+        recordingChunks.current = [];
+        recordingBytes.current = 0;
+        stopStream(recordingStream.current);
+        recordingStream.current = null;
+        mediaRecorder.current = null;
+        setTranscriptionStatus("error");
+        setTranscriptionError("Microphone recording failed. Check the microphone and try again.");
+      };
+      recorder.start(1_000);
+      setTranscriptionStatus("recording");
+    } catch (recordingError) {
+      if (operationId !== transcriptionRequestId.current) return;
+      const recorder = mediaRecorder.current;
+      if (recorder && recorder.state !== "inactive") {
+        recorder.ondataavailable = null;
+        recorder.onstop = null;
+        recorder.onerror = null;
+        recorder.stop();
+      }
+      mediaRecorder.current = null;
+      stopStream(recordingStream.current);
+      recordingStream.current = null;
+      setTranscriptionStatus("error");
+      const errorName =
+        typeof recordingError === "object" &&
+        recordingError !== null &&
+        "name" in recordingError &&
+        typeof recordingError.name === "string"
+          ? recordingError.name
+          : "";
+      setTranscriptionError(
+        errorName === "NotAllowedError" || errorName === "SecurityError"
+          ? "Microphone permission was denied. Allow microphone access and try again."
+          : errorName === "NotFoundError"
+            ? "No microphone was found. Connect a microphone and try again."
+            : recordingError instanceof Error
+              ? `Could not start microphone recording: ${recordingError.message}`
+              : "Could not start microphone recording.",
+      );
+    }
+  };
+
+  const stopRecording = () => {
+    const recorder = mediaRecorder.current;
+    if (recorder?.state === "recording") {
+      recorder.stop();
+    }
+  };
+
+  const cancelTranscription = () => {
+    transcriptionRequestId.current += 1;
+    transcriptionController.current?.abort();
+    transcriptionController.current = null;
+    const recorder = mediaRecorder.current;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.ondataavailable = null;
+      recorder.onstop = null;
+      recorder.onerror = null;
+      recorder.stop();
+    }
+    mediaRecorder.current = null;
+    stopStream(recordingStream.current);
+    recordingStream.current = null;
+    recordingChunks.current = [];
+    recordingBytes.current = 0;
+    recordingTooLarge.current = false;
+    setTranscriptionStatus("idle");
+    setTranscriptionError(null);
+  };
+
+  const discardTranscription = () => {
+    setDraft(draftBeforeRecording.current);
+    setTranscriptionStatus("idle");
+    setTranscriptionError(null);
   };
 
   const generateSpeech = async (messageIndex: number, text: string) => {
@@ -175,6 +424,7 @@ function App() {
     activeRequest.current?.abort();
     activeRequest.current = null;
     stopSpeech();
+    cancelTranscription();
     setMessages([]);
     setDraft("");
     setError(null);
@@ -194,6 +444,8 @@ function App() {
     setMessages(nextMessages);
     setDraft("");
     setError(null);
+    setTranscriptionStatus("idle");
+    setTranscriptionError(null);
     setLoading(true);
 
     try {
@@ -335,17 +587,57 @@ function App() {
             {error && <p className="error-message" role="alert">{error}</p>}
           </div>
 
+          <div className="recording-controls">
+            {transcriptionStatus === "recording" ? (
+              <button onClick={stopRecording} type="button">Stop recording</button>
+            ) : (
+              <button
+                disabled={
+                  loading ||
+                  transcriptionStatus === "requesting" ||
+                  transcriptionStatus === "transcribing"
+                }
+                onClick={() => void startRecording()}
+                type="button"
+              >
+                {transcriptionStatus === "requesting"
+                  ? "Requesting microphone…"
+                  : transcriptionStatus === "transcribing"
+                    ? "Transcribing…"
+                    : "Start recording"}
+              </button>
+            )}
+            {transcriptionStatus === "transcribed" && (
+              <button onClick={discardTranscription} type="button">
+                Discard transcription
+              </button>
+            )}
+            {transcriptionStatus === "recording" && (
+              <p role="status">Recording locally. Stop to transcribe.</p>
+            )}
+            {transcriptionStatus === "transcribing" && (
+              <p role="status">Transcribing locally…</p>
+            )}
+            {transcriptionStatus === "transcribed" && (
+              <p role="status">Review or edit the transcription before sending.</p>
+            )}
+            {transcriptionError && <p role="alert">{transcriptionError}</p>}
+          </div>
           <form className="composer" onSubmit={sendMessage}>
             <label className="sr-only" htmlFor="chat-message">Message</label>
             <textarea
               id="chat-message"
+              disabled={speechInputBusy}
               maxLength={4000}
               onChange={(event) => setDraft(event.target.value)}
               placeholder="Write a message…"
               rows={2}
               value={draft}
             />
-            <button disabled={loading || !draft.trim()} type="submit">
+            <button
+              disabled={loading || speechInputBusy || !draft.trim()}
+              type="submit"
+            >
               {loading ? "Thinking…" : "Send"}
             </button>
           </form>
