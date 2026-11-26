@@ -15,14 +15,18 @@ Ollama model and keeps conversation history only in the current browser session.
   not infer or select emotions automatically.
 - On-demand Kokoro text-to-speech runs locally on the CPU. Audio is held
   temporarily in browser memory and is not saved by the backend.
+- Push-to-talk speech recognition uses faster-whisper `base` on CPU with int8.
+  Transcripts appear in the editable message input before they are sent.
 - The speaking expression follows actual audio playback, but is not synchronized
   to speech sounds or phonemes.
-- No cloud APIs, microphone, speech recognition, database, or permanent memory.
+- No cloud APIs, always-on listening, wake-word detection, voice cloning,
+  database, or permanent memory.
 
 ## Prerequisites
 
 - Python 3.11+ and Node.js/npm.
 - Ollama running locally.
+- A browser with microphone support; grant permission when prompted.
 - A compatible VRM 1.0 file at `frontend\public\models\avatar.vrm` to display
   the avatar. Model files are local-only and ignored by Git.
 
@@ -46,7 +50,7 @@ In PowerShell:
 cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[test,tts]"
+python -m pip install -e ".[test,tts,stt]"
 ollama pull qwen3:4b
 ```
 
@@ -59,9 +63,11 @@ npm ci
 
 Ollama model downloads happen locally. Chat requests go only to Ollama at
 `127.0.0.1:11434`; the backend and Vite development server bind to loopback.
-Kokoro inference is local and CPU-only. On first TTS use, Kokoro may download
-its model and voice weights into the local Hugging Face cache; no conversation
-text is sent to that model host. Later synthesis uses the cached weights.
+Kokoro inference and faster-whisper transcription run locally on the CPU. On
+first use, Kokoro and faster-whisper may download model and voice weights into
+the local Hugging Face cache. Only those weights are fetched; conversation text
+and microphone recordings are not sent to model hosts. Later processing uses
+the cached weights.
 
 ## Run the app
 
@@ -94,10 +100,18 @@ message or starting a new conversation stops current speech. If Kokoro or its
 weights are unavailable, the UI displays an error while leaving the text reply
 available. TTS is optional; the chat works without installing the `tts` extra.
 
+For push-to-talk, select **Start recording**, speak, then select **Stop
+recording**. After local transcription completes, the text is inserted into the
+message box; review or edit it before sending, or select **Discard
+transcription** to restore the previous draft. Microphone permission is
+requested only after you start recording. Recordings are held in memory,
+limited to 20 MB, and are not written to disk. The app does not listen in the
+background.
+
 ## Tests
 
-Backend tests mock Ollama and Kokoro responses and do not require running AI
-models:
+Backend tests mock Ollama, Kokoro and faster-whisper and do not require running
+AI models:
 
 ```powershell
 cd backend
@@ -105,7 +119,8 @@ cd backend
 python -m pytest -q
 ```
 
-Frontend tests mock chat and TTS HTTP responses and do not call Ollama or Kokoro:
+Frontend tests mock chat, TTS, STT and browser recording APIs; they do not call
+Ollama, Kokoro or faster-whisper:
 
 ```powershell
 cd frontend
@@ -115,9 +130,9 @@ npm run build
 
 ## Hardware feasibility checks
 
-The existing standalone checks remain available. The `tts` extra is sufficient
-for the app's local TTS. Install the separate feasibility extra only when
-running all feasibility checks, including STT:
+The existing standalone checks remain available. The `tts` and `stt` extras
+install only their corresponding app dependencies. Install the separate
+feasibility extra only when running all feasibility checks:
 
 ```powershell
 cd backend
