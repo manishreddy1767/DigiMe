@@ -22,4 +22,13 @@ describe("VRM expression targets", () => {
     expect(speaking.expressionWeights.aa).toBeGreaterThan(0);
     expect(speaking.expressionWeights.aa).toBeLessThan(0.14);
   });
+
+  it("uses playback amplitude for mouth openness and closes at silence", () => {
+    const speaking = getAvatarAnimationFrame("speaking", 1, 0.42);
+    const silence = getAvatarAnimationFrame("speaking", 1, 0);
+
+    expect(speaking.expressionWeights.aa).toBe(0.42);
+    expect(silence.expressionWeights.aa).toBe(0);
+    expect(getAvatarAnimationFrame("speaking", 1, 1).expressionWeights.aa).toBe(0.65);
+  });
 });

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
@@ -81,6 +81,19 @@ function installAppFetch(handler: AppFetchHandler) {
         communication_style: "friendly",
         response_length: "balanced",
         custom_instructions: "",
+        updated_at: "",
+      });
+    }
+    if (path === "/api/voice-settings" && (!init?.method || init.method === "GET")) {
+      return jsonResponse({
+        auto_play_responses: false,
+        continuous_conversation_enabled: false,
+        updated_at: "",
+      });
+    }
+    if (path === "/api/voice-settings" && init?.method === "PUT") {
+      return jsonResponse({
+        ...JSON.parse(init.body as string),
         updated_at: "",
       });
     }
@@ -276,6 +289,32 @@ describe("chat interface", () => {
     ]);
   });
 
+  it("does not submit the same chat message twice while a request is pending", async () => {
+    let resolveChat!: (response: ReturnType<typeof jsonResponse>) => void;
+    const pendingChat = new Promise<ReturnType<typeof jsonResponse>>((resolve) => {
+      resolveChat = resolve;
+    });
+    const fetchMock = installAppFetch((path) =>
+      Promise.resolve(path === "/api/chat" ? pendingChat : undefined),
+    );
+    render(<App />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
+      target: { value: "Only send once." },
+    });
+    const form = document.querySelector(".composer") as HTMLFormElement;
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+      fireEvent.submit(form);
+    });
+    expect(callsFor(fetchMock, "/api/chat")).toHaveLength(1);
+
+    await act(async () => {
+      resolveChat(jsonResponse({ message: "Received once." }));
+    });
+    expect(await screen.findByText("Received once.")).toBeTruthy();
+  });
+
   it("shows loading state, and a new conversation ignores an in-flight reply", async () => {
     let resolveRequest!: (response: ReturnType<typeof jsonResponse>) => void;
     const fetchMock = installAppFetch((path) =>
@@ -413,6 +452,138 @@ describe("chat interface", () => {
     );
     expect(screen.getByText("Text remains available.")).toBeTruthy();
     expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("idle");
+  });
+
+  it("automatically synthesizes and plays responses when the setting is enabled", async () => {
+    const fetchMock = installAppFetch((path) => {
+      if (path === "/api/voice-settings") {
+        return Promise.resolve(jsonResponse({
+          auto_play_responses: true,
+          continuous_conversation_enabled: false,
+          updated_at: "",
+        }));
+      }
+      if (path === "/api/chat") {
+        return Promise.resolve(jsonResponse({ message: "Automatically spoken reply." }));
+      }
+      if (path === "/api/tts") return Promise.resolve(audioResponse());
+      return Promise.resolve(undefined);
+    });
+    render(<App />);
+
+    fireEvent.click(screen.getByText("Voice settings"));
+    const autoPlay = await screen.findByRole("checkbox", {
+      name: "Automatically speak AI responses",
+    });
+    expect((autoPlay as HTMLInputElement).checked).toBe(true);
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
+      target: { value: "Please speak this." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(await screen.findByText("Automatically spoken reply.")).toBeTruthy();
+    expect(await screen.findByText("Playing audio.")).toBeTruthy();
+    expect(callsFor(fetchMock, "/api/tts")).toHaveLength(1);
+    expect(JSON.parse(callsFor(fetchMock, "/api/tts")[0][1]?.body as string)).toEqual({
+      text: "Automatically spoken reply.",
+    });
+  });
+
+  it("caps speech synthesis for long replies while preserving the complete text", async () => {
+    const longReply = "x".repeat(4_001);
+    const fetchMock = installAppFetch((path) => {
+      if (path === "/api/voice-settings") {
+        return Promise.resolve(jsonResponse({
+          auto_play_responses: true,
+          continuous_conversation_enabled: false,
+          updated_at: "",
+        }));
+      }
+      if (path === "/api/chat") {
+        return Promise.resolve(jsonResponse({ message: longReply }));
+      }
+      return Promise.resolve(undefined);
+    });
+    render(<App />);
+
+    fireEvent.click(screen.getByText("Voice settings"));
+    expect(await screen.findByRole("checkbox", {
+      name: "Automatically speak AI responses",
+    })).toBeTruthy();
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
+      target: { value: "Give me a long answer." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(await screen.findByText(longReply)).toBeTruthy();
+    expect(await screen.findByText(/Replies over 4,000 characters are kept as text/))
+      .toBeTruthy();
+    expect(callsFor(fetchMock, "/api/tts")).toHaveLength(0);
+  });
+
+  it("keeps a continuous conversation local and resumes listening after playback", async () => {
+    const microphone = mockMicrophone();
+    const fetchMock = installAppFetch((path) => {
+      if (path === "/api/voice-settings") {
+        return Promise.resolve(jsonResponse({
+          auto_play_responses: false,
+          continuous_conversation_enabled: true,
+          updated_at: "",
+        }));
+      }
+      if (path === "/api/stt") {
+        return Promise.resolve(jsonResponse({ text: "What is the weather?" }));
+      }
+      if (path === "/api/chat") {
+        return Promise.resolve(jsonResponse({ message: "A voice reply." }));
+      }
+      if (path === "/api/tts") return Promise.resolve(audioResponse());
+      return Promise.resolve(undefined);
+    });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Start voice conversation" }));
+    expect(await screen.findByText("Listening for your voice.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Stop recording" }));
+
+    expect(await screen.findByText("A voice reply.")).toBeTruthy();
+    expect(await screen.findByText("Playing audio.")).toBeTruthy();
+    expect(callsFor(fetchMock, "/api/chat")).toHaveLength(1);
+    fireEvent.ended(document.querySelector("audio") as HTMLAudioElement);
+    await waitFor(() => expect(microphone.getUserMedia).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop voice conversation" }));
+    expect(screen.queryByText("Listening for your voice.")).toBeNull();
+    expect(callsFor(fetchMock, "/api/chat")).toHaveLength(1);
+    expect(microphone.track.stop).toHaveBeenCalled();
+  });
+
+  it("interrupts playback before opening the microphone and avoids a second chat submit", async () => {
+    const microphone = mockMicrophone();
+    const fetchMock = installAppFetch((path) => {
+      if (path === "/api/chat") {
+        return Promise.resolve(jsonResponse({ message: "A reply to interrupt." }));
+      }
+      if (path === "/api/tts") return Promise.resolve(audioResponse());
+      return Promise.resolve(undefined);
+    });
+    render(<App />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
+      target: { value: "Start speaking." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByText("A reply to interrupt.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Generate audio" }));
+    expect(await screen.findByText("Audio ready.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Play audio" }));
+    expect(await screen.findByText("Playing audio.")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Interrupt and listen" }));
+    expect(await screen.findByText("Recording locally. Stop to transcribe.")).toBeTruthy();
+    expect(document.querySelector("audio")?.getAttribute("src")).toBeNull();
+    expect(microphone.getUserMedia).toHaveBeenCalledOnce();
+    expect(callsFor(fetchMock, "/api/chat")).toHaveLength(1);
   });
 
   it("stops active playback when starting a new conversation", async () => {
