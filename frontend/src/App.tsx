@@ -1,6 +1,10 @@
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AvatarView from "./avatar/AvatarView";
-import type { AvatarAnimationState } from "./avatar/avatarAnimation";
+import {
+  inferAvatarEmotion,
+  type AvatarAnimationState,
+  type AvatarEmotion,
+} from "./avatar/avatarAnimation";
 import MemorySettings from "./MemorySettings";
 import PersonalitySettings from "./PersonalitySettings";
 import VoiceSettings, {
@@ -64,6 +68,7 @@ function stopStream(stream: MediaStream | null) {
 
 function App() {
   const [avatarLoaded, setAvatarLoaded] = useState(false);
+  const [avatarSource, setAvatarSource] = useState<"procedural" | "vrm">("procedural");
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -104,11 +109,22 @@ function App() {
   const draftBeforeRecording = useRef("");
   const voiceSessionActiveRef = useRef(false);
   const voiceActivityMonitorRef = useRef<VoiceActivityMonitor | null>(null);
+  const avatarEmotion = useMemo<AvatarEmotion>(() => {
+    const lastAssistantMessage = [...messages]
+      .reverse()
+      .find((message) => message.role === "assistant");
+    return lastAssistantMessage
+      ? inferAvatarEmotion(lastAssistantMessage.content)
+      : "neutral";
+  }, [messages]);
+  const displayedAvatarEmotion = loading ? "neutral" : avatarEmotion;
   const avatarState: AvatarAnimationState = loading
     ? "thinking"
     : speech.status === "playing"
       ? "speaking"
-      : "idle";
+      : displayedAvatarEmotion === "neutral"
+        ? "idle"
+        : displayedAvatarEmotion;
   const speechInputBusy = ["requesting", "recording", "transcribing"].includes(
     transcriptionStatus,
   );
@@ -248,13 +264,13 @@ function App() {
     };
   }, []);
 
-  const handleAvatarLoaded = useCallback(() => {
+  const handleAvatarLoaded = useCallback((source: "procedural" | "vrm") => {
     setAvatarLoaded(true);
+    setAvatarSource(source);
     setAvatarError(null);
   }, []);
 
   const handleAvatarError = useCallback((message: string) => {
-    setAvatarLoaded(false);
     setAvatarError(message);
   }, []);
 
@@ -1144,13 +1160,19 @@ function App() {
         <div className="avatar-panel">
           <AvatarView
             state={avatarState}
+            emotion={displayedAvatarEmotion}
             onLoaded={handleAvatarLoaded}
             onError={handleAvatarError}
             getAudioAmplitude={getAudioAmplitude}
           />
           <div className="avatar-status" role="status">
             <span className={`status-dot ${avatarLoaded ? "ready" : ""}`} />
-            {avatarError ?? (avatarLoaded ? "VRM loaded locally" : "Loading local VRM…")}
+            {avatarError ??
+              (avatarLoaded
+                ? avatarSource === "vrm"
+                  ? "Local VRM loaded"
+                  : "Procedural avatar ready"
+                : "Loading avatar…")}
           </div>
         </div>
 
