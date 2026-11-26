@@ -3,8 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
 vi.mock("./avatar/AvatarView", () => ({
-  default: ({ state }: { state: string }) => (
-    <div aria-label="Avatar test placeholder" data-avatar-state={state} data-testid="avatar" />
+  default: ({ state, emotion }: { state: string; emotion: string }) => (
+    <div
+      aria-label="Avatar test placeholder"
+      data-avatar-emotion={emotion}
+      data-avatar-state={state}
+      data-testid="avatar"
+    />
   ),
 }));
 
@@ -289,6 +294,35 @@ describe("chat interface", () => {
     ]);
   });
 
+  it.each([
+    ["Congratulations, that's wonderful news!", "happy"],
+    ["I'm sorry to hear about your loss.", "sad"],
+    ["What would you like to try next?", "curious"],
+    ["The answer is 42.", "neutral"],
+  ])("selects a grounded %s response expression", async (reply, emotion) => {
+    const fetchMock = installAppFetch((path) =>
+      Promise.resolve(
+        path === "/api/chat"
+          ? jsonResponse({ message: reply })
+          : undefined,
+      ),
+    );
+    render(<App />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
+      target: { value: "Please respond." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(await screen.findByText(reply)).toBeTruthy();
+    const avatar = screen.getByTestId("avatar");
+    expect(avatar.getAttribute("data-avatar-emotion")).toBe(emotion);
+    expect(avatar.getAttribute("data-avatar-state")).toBe(
+      emotion === "neutral" ? "idle" : emotion,
+    );
+    expect(callsFor(fetchMock, "/api/chat")).toHaveLength(1);
+  });
+
   it("does not submit the same chat message twice while a request is pending", async () => {
     let resolveChat!: (response: ReturnType<typeof jsonResponse>) => void;
     const pendingChat = new Promise<ReturnType<typeof jsonResponse>>((resolve) => {
@@ -383,7 +417,9 @@ describe("chat interface", () => {
     const fetchMock = installAppFetch((path) => {
       if (path === "/api/chat" && !chatResponseUsed) {
         chatResponseUsed = true;
-        return Promise.resolve(jsonResponse({ message: "A local spoken reply." }));
+        return Promise.resolve(jsonResponse({
+          message: "Congratulations! A local spoken reply.",
+        }));
       }
       if (path === "/api/tts") return pendingSpeech;
       return Promise.resolve(undefined);
@@ -394,8 +430,8 @@ describe("chat interface", () => {
       target: { value: "Say hello" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    await screen.findByText("A local spoken reply.");
-    expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("idle");
+    await screen.findByText("Congratulations! A local spoken reply.");
+    expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("happy");
 
     fireEvent.click(screen.getByRole("button", { name: "Generate audio" }));
     expect(screen.getByText("Generating speech locally…")).toBeTruthy();
@@ -405,17 +441,18 @@ describe("chat interface", () => {
     expect(await screen.findByText("Audio ready.")).toBeTruthy();
     expect(callsFor(fetchMock, "/api/chat")).toHaveLength(1);
     expect(JSON.parse(callsFor(fetchMock, "/api/tts")[0][1]?.body as string)).toEqual({
-      text: "A local spoken reply.",
+      text: "Congratulations! A local spoken reply.",
     });
     expect(document.querySelectorAll("audio")).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Play audio" }));
     expect(await screen.findByText("Playing audio.")).toBeTruthy();
     expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("speaking");
+    expect(screen.getByTestId("avatar").getAttribute("data-avatar-emotion")).toBe("happy");
 
     fireEvent.click(screen.getByRole("button", { name: "Pause audio" }));
     expect(await screen.findByText("Audio paused.")).toBeTruthy();
-    expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("idle");
+    expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("happy");
 
     fireEvent.click(screen.getByRole("button", { name: "Resume audio" }));
     expect(await screen.findByText("Playing audio.")).toBeTruthy();
@@ -423,7 +460,7 @@ describe("chat interface", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Stop audio" }));
     expect(screen.queryByText("Playing audio.")).toBeNull();
-    expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("idle");
+    expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("happy");
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:mock-speech");
   });
 
