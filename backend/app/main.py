@@ -84,6 +84,11 @@ class PersonalityUpdate(BaseModel):
         return value
 
 
+class VoiceSettingsUpdate(BaseModel):
+    auto_play_responses: bool
+    continuous_conversation_enabled: bool
+
+
 class MemoryRequest(BaseModel):
     content: str = Field(min_length=1, max_length=2_000)
     importance: int = Field(default=3, ge=1, le=5)
@@ -180,6 +185,19 @@ def update_personality(personality: PersonalityUpdate) -> dict[str, str]:
 @app.post("/api/personality/reset")
 def reset_personality() -> dict[str, str]:
     return Database().reset_personality()
+
+
+@app.get("/api/voice-settings")
+def get_voice_settings() -> dict[str, object]:
+    return Database().get_voice_settings()
+
+
+@app.put("/api/voice-settings")
+def update_voice_settings(settings: VoiceSettingsUpdate) -> dict[str, object]:
+    return Database().update_voice_settings(
+        settings.auto_play_responses,
+        settings.continuous_conversation_enabled,
+    )
 
 
 @app.get("/api/memories")

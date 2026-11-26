@@ -24,6 +24,10 @@ DEFAULT_PERSONALITY = {
     "response_length": "balanced",
     "custom_instructions": "",
 }
+DEFAULT_VOICE_SETTINGS = {
+    "auto_play_responses": False,
+    "continuous_conversation_enabled": False,
+}
 
 
 class RecordNotFoundError(Exception):
@@ -107,6 +111,16 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
                 INSERT OR IGNORE INTO personality (id, updated_at)
+                    VALUES (1, '');
+                CREATE TABLE IF NOT EXISTS voice_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    auto_play_responses INTEGER NOT NULL DEFAULT 0
+                        CHECK (auto_play_responses IN (0, 1)),
+                    continuous_conversation_enabled INTEGER NOT NULL DEFAULT 0
+                        CHECK (continuous_conversation_enabled IN (0, 1)),
+                    updated_at TEXT NOT NULL
+                );
+                INSERT OR IGNORE INTO voice_settings (id, updated_at)
                     VALUES (1, '');
                 CREATE TABLE IF NOT EXISTS memories (
                     id TEXT PRIMARY KEY,
@@ -320,6 +334,38 @@ class Database:
 
     def reset_personality(self) -> dict[str, str]:
         return self.update_personality(**DEFAULT_PERSONALITY)
+
+    def get_voice_settings(self) -> dict[str, object]:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT auto_play_responses, continuous_conversation_enabled, updated_at
+                FROM voice_settings WHERE id = 1
+                """
+            ).fetchone()
+        return {
+            "auto_play_responses": bool(row["auto_play_responses"]),
+            "continuous_conversation_enabled": bool(row["continuous_conversation_enabled"]),
+            "updated_at": row["updated_at"],
+        }
+
+    def update_voice_settings(
+        self,
+        auto_play_responses: bool,
+        continuous_conversation_enabled: bool,
+    ) -> dict[str, object]:
+        now = self._now()
+        with self._connection() as connection:
+            connection.execute(
+                """
+                UPDATE voice_settings
+                SET auto_play_responses = ?, continuous_conversation_enabled = ?,
+                    updated_at = ?
+                WHERE id = 1
+                """,
+                (int(auto_play_responses), int(continuous_conversation_enabled), now),
+            )
+        return self.get_voice_settings()
 
     def create_memory(
         self,
