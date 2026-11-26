@@ -1,12 +1,12 @@
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.services.ollama import OllamaService
 from app.services.speech import get_kokoro_service, get_whisper_service
-from app.services.storage import Database
+from app.services.storage import Database, RecordNotFoundError
 
 app = FastAPI(
     title="Digital Me",
@@ -44,6 +44,29 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     message: str
     conversation_id: str
+
+
+class ProfileUpdate(BaseModel):
+    name: str = Field(default="", max_length=100)
+    about: str = Field(default="", max_length=1_000)
+    preferences: str = Field(default="", max_length=1_000)
+
+    @field_validator("name", "about", "preferences")
+    @classmethod
+    def strip_profile_fields(cls, value: str) -> str:
+        return value.strip()
+
+
+class MemoryRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("content")
+    @classmethod
+    def content_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Memory content must not be blank.")
+        return value
 
 
 class TTSRequest(BaseModel):
@@ -88,6 +111,47 @@ def get_conversation(conversation_id: str) -> dict[str, object]:
 def delete_conversation(conversation_id: str) -> Response:
     if not Database().delete_conversation(conversation_id):
         raise HTTPException(status_code=404, detail="Conversation not found.")
+    return Response(status_code=204)
+
+
+@app.get("/api/profile")
+def get_profile() -> dict[str, str]:
+    return Database().get_profile()
+
+
+@app.put("/api/profile")
+def update_profile(profile: ProfileUpdate) -> dict[str, str]:
+    return Database().update_profile(
+        profile.name,
+        profile.about,
+        profile.preferences,
+    )
+
+
+@app.get("/api/memories")
+def list_memories(
+    query: str | None = Query(default=None, alias="q", max_length=500),
+) -> list[dict[str, str]]:
+    return Database().list_memories(query)
+
+
+@app.post("/api/memories", status_code=201)
+def create_memory(memory: MemoryRequest) -> dict[str, str]:
+    return Database().create_memory(memory.content)
+
+
+@app.put("/api/memories/{memory_id}")
+def update_memory(memory_id: str, memory: MemoryRequest) -> dict[str, str]:
+    try:
+        return Database().update_memory(memory_id, memory.content)
+    except RecordNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.delete("/api/memories/{memory_id}", status_code=204)
+def delete_memory(memory_id: str) -> Response:
+    if not Database().delete_memory(memory_id):
+        raise HTTPException(status_code=404, detail="Memory not found.")
     return Response(status_code=204)
 
 
