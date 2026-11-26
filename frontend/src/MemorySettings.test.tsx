@@ -286,4 +286,81 @@ describe("local profile and approved memories", () => {
       ([input, init]) => input.includes("/approve") && init?.method === "POST",
     )).toBe(false);
   });
+
+  it("keeps recurring-preference suggestions pending until explicitly approved", async () => {
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      if (input === "/api/profile") return jsonResponse(profile);
+      if (input === "/api/memories" && !init?.method) return jsonResponse([]);
+      if (input === "/api/conversations/conversation-1/memory-suggestions") {
+        return jsonResponse(
+          init?.method === "POST" ? [suggestion] : [],
+        );
+      }
+      if (input === "/api/conversations/conversation-1/preference-suggestions") {
+        return jsonResponse([suggestion]);
+      }
+      if (input === "/api/memory-suggestions/suggestion-1/approve") {
+        return jsonResponse(
+          { ...savedMemory, content: suggestion.content },
+          201,
+        );
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <MemorySettings
+        conversationId="conversation-1"
+        personalizationEnabled
+      />,
+    );
+
+    fireEvent.click(await screen.findByText(/Approved long-term memories/));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Suggest recurring preferences" }),
+    );
+    expect(await screen.findByText(suggestion.content)).toBeTruthy();
+    expect(fetchMock.mock.calls.some(
+      ([input, init]) => input === "/api/memories" && init?.method === "POST",
+    )).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve memory" }));
+    expect(await screen.findByText("Suggestion approved and saved as a memory."))
+      .toBeTruthy();
+    expect(fetchMock.mock.calls.some(
+      ([input, init]) =>
+        input === "/api/memory-suggestions/suggestion-1/approve" &&
+        init?.method === "POST",
+    )).toBe(true);
+  });
+
+  it("does not allow recurring-preference analysis when personalization is disabled", async () => {
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      if (input === "/api/profile") return jsonResponse(profile);
+      if (input === "/api/memories" && !init?.method) return jsonResponse([]);
+      if (input === "/api/conversations/conversation-1/memory-suggestions") {
+        return jsonResponse([]);
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <MemorySettings
+        conversationId="conversation-1"
+        personalizationEnabled={false}
+      />,
+    );
+
+    fireEvent.click(await screen.findByText(/Approved long-term memories/));
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Suggest recurring preferences",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) =>
+      input.endsWith("/preference-suggestions"),
+    )).toBe(false);
+  });
 });

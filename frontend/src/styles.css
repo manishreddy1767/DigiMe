@@ -578,6 +578,43 @@ h2 {
   font-size: 0.9rem;
 }
 
+.personalization-panel {
+  padding-top: 0;
+}
+
+.topic-summary {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid #293447;
+  border-radius: 9px;
+  color: #b7c3d5;
+  background: #111925;
+  font-size: 0.8rem;
+}
+
+.topic-summary h3,
+.topic-summary p {
+  margin: 0;
+}
+
+.topic-summary ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.personalization-suggestion {
+  display: grid;
+  gap: 7px;
+}
+
+.personalization-suggestion p {
+  margin: 0;
+  line-height: 1.4;
+}
+
 .suggestion-panel .settings-note {
   padding: 0;
 }

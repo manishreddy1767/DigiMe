@@ -6,6 +6,7 @@ import {
   type AvatarEmotion,
 } from "./avatar/avatarAnimation";
 import MemorySettings from "./MemorySettings";
+import PersonalizationSettings from "./PersonalizationSettings";
 import PersonalitySettings from "./PersonalitySettings";
 import VoiceSettings, {
   DEFAULT_VOICE_SETTINGS,
@@ -79,6 +80,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [speech, setSpeech] = useState<SpeechState>(IDLE_SPEECH_STATE);
   const [voiceSettings, setVoiceSettings] = useState(DEFAULT_VOICE_SETTINGS);
+  const [personalizationEnabled, setPersonalizationEnabled] = useState(true);
   const [voiceSessionActive, setVoiceSessionActive] = useState(false);
   const [voiceRuntimeError, setVoiceRuntimeError] = useState<string | null>(null);
   const [transcriptionStatus, setTranscriptionStatus] =
@@ -276,6 +278,14 @@ function App() {
 
   const handleVoiceSettingsChange = useCallback((settings: VoiceSettingsValue) => {
     setVoiceSettings(settings);
+  }, []);
+
+  const handlePersonalizationSettingsChange = useCallback((enabled: boolean) => {
+    setPersonalizationEnabled(enabled);
+  }, []);
+
+  const usePersonalizationPrompt = useCallback((prompt: string) => {
+    setDraft(prompt);
   }, []);
 
   const getAudioAmplitude = useCallback((): number | null => {
@@ -1400,9 +1410,16 @@ function App() {
           </p>
           <div className="memory-settings">
             <PersonalitySettings />
+            <PersonalizationSettings
+              onSettingsChange={handlePersonalizationSettingsChange}
+              onUsePrompt={usePersonalizationPrompt}
+            />
             <VoiceSettings onSettingsChange={handleVoiceSettingsChange} />
           </div>
-          <MemorySettings conversationId={conversationId} />
+          <MemorySettings
+            conversationId={conversationId}
+            personalizationEnabled={personalizationEnabled}
+          />
           <audio
             aria-hidden="true"
             hidden

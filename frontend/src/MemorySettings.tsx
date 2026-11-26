@@ -96,7 +96,13 @@ function getSimilarMemories(error: unknown): SimilarMemory[] | null {
   );
 }
 
-function MemorySettings({ conversationId = null }: { conversationId?: string | null }) {
+function MemorySettings({
+  conversationId = null,
+  personalizationEnabled = true,
+}: {
+  conversationId?: string | null;
+  personalizationEnabled?: boolean;
+}) {
   const [profile, setProfile] = useState<UserProfile>({
     name: "",
     about: "",
@@ -306,6 +312,33 @@ function MemorySettings({ conversationId = null }: { conversationId?: string | n
     } catch (error) {
       setSuggestionError(
         getErrorMessage(error, "Could not suggest memories from this conversation."),
+      );
+    } finally {
+      setSuggestionBusy(false);
+    }
+  };
+
+  const suggestRecurringPreferences = async () => {
+    if (!conversationId || !personalizationEnabled || suggestionBusy) return;
+    setSuggestionBusy(true);
+    setSuggestionError(null);
+    setStatus(null);
+    try {
+      const response = await fetch(
+        `/api/conversations/${encodeURIComponent(conversationId)}/preference-suggestions`,
+        { method: "POST" },
+      );
+      const result = await readResponse<MemorySuggestionRecord[]>(response);
+      setSuggestions(result.map((suggestion) => ({ ...suggestion, importance: 3 })));
+      setSuggestionWarnings({});
+      setStatus(
+        result.length > 0
+          ? "Review recurring-preference suggestions and explicitly approve any you want to save."
+          : "No recurring explicit preferences were found in recent local messages.",
+      );
+    } catch (error) {
+      setSuggestionError(
+        getErrorMessage(error, "Could not suggest recurring preferences."),
       );
     } finally {
       setSuggestionBusy(false);
@@ -638,9 +671,11 @@ function MemorySettings({ conversationId = null }: { conversationId?: string | n
           </ul>
         )}
         <div className="suggestion-panel">
-          <h3>Conversation suggestions</h3>
+          <h3>Pending suggestions</h3>
           <p className="settings-note">
-            Suggestions are not stored as memories unless you approve them.
+            Recurring-preference suggestions come from repeated explicit
+            statements. Suggestions are separate from personality settings and
+            approved memories; nothing becomes a memory unless you approve it.
           </p>
           <button
             disabled={!conversationId || suggestionBusy}
@@ -649,6 +684,18 @@ function MemorySettings({ conversationId = null }: { conversationId?: string | n
           >
             {suggestionBusy ? "Reviewing conversation…" : "Suggest from current conversation"}
           </button>
+          <button
+            disabled={!conversationId || !personalizationEnabled || suggestionBusy}
+            onClick={() => void suggestRecurringPreferences()}
+            type="button"
+          >
+            {suggestionBusy ? "Checking recent history…" : "Suggest recurring preferences"}
+          </button>
+          {!personalizationEnabled && (
+            <p className="settings-note">
+              Enable personalization to analyze recent messages for preferences.
+            </p>
+          )}
           {suggestionError && <p className="settings-error" role="alert">{suggestionError}</p>}
           {conversationId && suggestions.length === 0 && (
             <p className="settings-note">No pending suggestions.</p>

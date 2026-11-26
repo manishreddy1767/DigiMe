@@ -103,6 +103,24 @@ function installAppFetch(handler: AppFetchHandler) {
       });
     }
     if (
+      path === "/api/personalization/settings" &&
+      (!init?.method || init.method === "GET")
+    ) {
+      return jsonResponse({ enabled: true, updated_at: "" });
+    }
+    if (path === "/api/personalization/settings" && init?.method === "PUT") {
+      return jsonResponse({
+        ...JSON.parse(init.body as string),
+        updated_at: "",
+      });
+    }
+    if (path === "/api/personalization/topics") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/personalization/proactive-suggestions") {
+      return jsonResponse([]);
+    }
+    if (
       path.startsWith("/api/conversations/") &&
       path.endsWith("/memory-suggestions") &&
       (!init?.method || init.method === "GET")
