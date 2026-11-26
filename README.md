@@ -14,6 +14,8 @@ memories.
   history selection, and conversation deletion.
 - An editable local profile and explicitly approved long-term memories with
   FTS5 search, editing, deletion, and relevant-memory retrieval.
+- Persistent digital personality settings for name, communication style,
+  response length, and custom instructions.
 - New-conversation, loading and error states.
 - VRM idle motion and blinking, with thinking and brief speaking expressions
   driven by chat activity. The avatar supports a happy expression, but chat does
@@ -104,6 +106,14 @@ on wider screens and stack on smaller screens. Select a saved conversation to
 restore it, or use **New conversation** to start a separate history. The most
 recent conversation is restored after restarting the application. Delete a
 conversation from the history controls when you no longer want to retain it.
+
+Expand **Digital personality** to set its name, choose a friendly, professional,
+or casual style, choose concise, balanced, or detailed replies, and provide
+optional custom instructions. Settings are persisted locally and applied in
+every conversation as system-prompt instructions, separate from the editable
+user profile and approved memories. Save changes explicitly or reset the
+personality to its defaults. Ordinary chat messages never change these saved
+settings.
 
 If Ollama is stopped or Qwen3 4B is unavailable, the UI shows the backend error
 and keeps the message visible so you can resend it after fixing the local runtime.
