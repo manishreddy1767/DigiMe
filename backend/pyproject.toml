@@ -20,6 +20,10 @@ feasibility = [
     "kokoro>=0.9.4,<1",
     "soundfile>=0.13,<1",
 ]
+test = [
+    "httpx>=0.27,<1",
+    "pytest>=8,<10",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
