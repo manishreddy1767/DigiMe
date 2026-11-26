@@ -1,9 +1,12 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
+import { SPEAKING_DISPLAY_DURATION_MS } from "./avatar/avatarAnimation";
 
 vi.mock("./avatar/AvatarView", () => ({
-  default: () => <div aria-label="Avatar test placeholder" />,
+  default: ({ state }: { state: string }) => (
+    <div aria-label="Avatar test placeholder" data-avatar-state={state} data-testid="avatar" />
+  ),
 }));
 
 function jsonResponse(body: unknown, status = 200) {
@@ -27,15 +30,19 @@ describe("chat interface", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
 
+    expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("idle");
     const input = screen.getByRole("textbox", { name: "Message" });
     fireEvent.change(input, { target: { value: "Hello" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
+    expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("thinking");
     expect(await screen.findByText("Hello from mocked Ollama.")).toBeTruthy();
+    expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("speaking");
     fireEvent.change(input, { target: { value: "Continue" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(await screen.findByText("A contextual follow-up.")).toBeTruthy();
+    expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("speaking");
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const secondRequest = JSON.parse(fetchMock.mock.calls[1][1].body as string);
     expect(secondRequest.messages).toEqual([
@@ -43,6 +50,10 @@ describe("chat interface", () => {
       { role: "assistant", content: "Hello from mocked Ollama." },
       { role: "user", content: "Continue" },
     ]);
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, SPEAKING_DISPLAY_DURATION_MS + 50));
+    });
+    expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("idle");
   });
 
   it("shows loading state, and a new conversation ignores an in-flight reply", async () => {
@@ -61,8 +72,10 @@ describe("chat interface", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(screen.getByText("Digital Me is thinking…")).toBeTruthy();
+    expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("thinking");
     fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
     expect(screen.getByText("Send a message to start a conversation.")).toBeTruthy();
+    expect(screen.getByTestId("avatar").getAttribute("data-avatar-state")).toBe("idle");
 
     await act(async () => {
       resolveRequest(jsonResponse({ message: "Stale response" }));
