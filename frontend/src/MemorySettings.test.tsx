@@ -12,8 +12,23 @@ const profile = {
 const savedMemory = {
   id: "memory-1",
   content: "I enjoy mountain hikes.",
+  importance: 3,
   created_at: "2026-01-01T00:00:00+00:00",
   updated_at: "2026-01-01T00:00:00+00:00",
+};
+
+const similarMemory = {
+  ...savedMemory,
+  similarity: 0.94,
+  kind: "similar" as const,
+};
+
+const suggestion = {
+  id: "suggestion-1",
+  conversation_id: "conversation-1",
+  content: "I prefer hiking in the morning.",
+  status: "pending" as const,
+  created_at: "2026-01-01T00:00:00+00:00",
 };
 
 function jsonResponse(body: unknown, status = 200) {
@@ -107,11 +122,154 @@ describe("local profile and approved memories", () => {
     });
 
     fireEvent.change(memoryInput, { target: { value: "I enjoy coastal walks." } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Importance for memory memory-1" }), {
+      target: { value: "5" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     expect(await screen.findByText("Memory updated.")).toBeTruthy();
+    expect(JSON.parse(
+      fetchMock.mock.calls.find(([, init]) => init?.method === "PUT")?.[1]?.body as string,
+    )).toMatchObject({ content: "I enjoy coastal walks.", importance: 5 });
 
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     expect(await screen.findByText("Memory deleted.")).toBeTruthy();
     expect(screen.getByText("No approved memories found.")).toBeTruthy();
+  });
+
+  it("warns about similar memories and requires explicit confirmation to save", async () => {
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      if (input === "/api/profile") return jsonResponse(profile);
+      if (input === "/api/memories" && !init?.method) return jsonResponse([]);
+      if (input === "/api/memories" && init?.method === "POST") {
+        const body = JSON.parse(init.body as string) as {
+          content: string;
+          importance: number;
+          confirm_similar: boolean;
+        };
+        if (!body.confirm_similar) {
+          return jsonResponse({
+            detail: {
+              message: "Similar memory exists.",
+              similar_memories: [similarMemory],
+            },
+          }, 409);
+        }
+        return jsonResponse({ ...savedMemory, ...body }, 201);
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<MemorySettings />);
+
+    fireEvent.click(await screen.findByText(/Approved long-term memories/));
+    fireEvent.change(screen.getByRole("textbox", {
+      name: "Memory to approve and save",
+    }), { target: { value: "I prefer hiking in the morning." } });
+    fireEvent.change(screen.getByRole("combobox", { name: "New memory importance" }), {
+      target: { value: "4" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save approved memory" }));
+
+    expect(await screen.findByText("Similar approved memories found. Review before saving."))
+      .toBeTruthy();
+    expect(screen.getByText("I enjoy mountain hikes.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Save anyway" }));
+
+    expect(await screen.findByText("Memory saved with your approval.")).toBeTruthy();
+    const createCalls = fetchMock.mock.calls.filter(
+      ([input, init]) => input === "/api/memories" && init?.method === "POST",
+    );
+    expect(createCalls).toHaveLength(2);
+    expect(JSON.parse(createCalls[0][1]?.body as string)).toMatchObject({
+      importance: 4,
+      confirm_similar: false,
+    });
+    expect(JSON.parse(createCalls[1][1]?.body as string)).toMatchObject({
+      importance: 4,
+      confirm_similar: true,
+    });
+  });
+
+  it("loads conversation suggestions and saves only explicitly approved suggestions", async () => {
+    let approvalAttempt = 0;
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      if (input === "/api/profile") return jsonResponse(profile);
+      if (input === "/api/memories" && !init?.method) return jsonResponse([]);
+      if (input === "/api/conversations/conversation-1/memory-suggestions") {
+        return jsonResponse(init?.method === "POST" ? [suggestion] : []);
+      }
+      if (input === "/api/memory-suggestions/suggestion-1/approve") {
+        approvalAttempt += 1;
+        if (approvalAttempt === 1) {
+          return jsonResponse({
+            detail: {
+              message: "Similar memory exists.",
+              similar_memories: [similarMemory],
+            },
+          }, 409);
+        }
+        return jsonResponse({ ...savedMemory, content: suggestion.content }, 201);
+      }
+      if (input === "/api/memory-suggestions/suggestion-1" && init?.method === "DELETE") {
+        return { ok: true, status: 204, json: async () => ({}) };
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<MemorySettings conversationId="conversation-1" />);
+
+    fireEvent.click(await screen.findByText(/Approved long-term memories/));
+    fireEvent.click(screen.getByRole("button", { name: "Suggest from current conversation" }));
+    expect(await screen.findByText(suggestion.content)).toBeTruthy();
+    expect(fetchMock.mock.calls.some(
+      ([input, init]) => input.includes("/approve") && init?.method === "POST",
+    )).toBe(false);
+
+    fireEvent.change(screen.getByRole("combobox", {
+      name: "Importance for suggestion suggestion-1",
+    }), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("button", { name: "Approve memory" }));
+    expect(await screen.findByText("Similar approved memories found. Review before approval."))
+      .toBeTruthy();
+    expect(screen.getByRole("button", { name: "Approve anyway" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Approve anyway" }));
+    expect(await screen.findByText("Suggestion approved and saved as a memory.")).toBeTruthy();
+    const approvalCalls = fetchMock.mock.calls.filter(
+      ([input]) => input === "/api/memory-suggestions/suggestion-1/approve",
+    );
+    expect(approvalCalls).toHaveLength(2);
+    expect(JSON.parse(approvalCalls[0][1]?.body as string)).toMatchObject({
+      importance: 5,
+      confirm_similar: false,
+    });
+    expect(JSON.parse(approvalCalls[1][1]?.body as string)).toMatchObject({
+      importance: 5,
+      confirm_similar: true,
+    });
+  });
+
+  it("lets users dismiss pending suggestions without approving them", async () => {
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      if (input === "/api/profile") return jsonResponse(profile);
+      if (input === "/api/memories" && !init?.method) return jsonResponse([]);
+      if (input === "/api/conversations/conversation-1/memory-suggestions") {
+        return jsonResponse(init?.method === "POST" ? [suggestion] : []);
+      }
+      if (input === "/api/memory-suggestions/suggestion-1" && init?.method === "DELETE") {
+        return { ok: true, status: 204, json: async () => ({}) };
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<MemorySettings conversationId="conversation-1" />);
+
+    fireEvent.click(await screen.findByText(/Approved long-term memories/));
+    fireEvent.click(screen.getByRole("button", { name: "Suggest from current conversation" }));
+    expect(await screen.findByText(suggestion.content)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(screen.queryByText(suggestion.content)).toBeNull());
+    expect(fetchMock.mock.calls.some(
+      ([input, init]) => input.includes("/approve") && init?.method === "POST",
+    )).toBe(false);
   });
 });

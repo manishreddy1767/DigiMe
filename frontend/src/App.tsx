@@ -989,7 +989,7 @@ function App() {
           <div className="memory-settings">
             <PersonalitySettings />
           </div>
-          <MemorySettings />
+          <MemorySettings conversationId={conversationId} />
           <audio
             aria-hidden="true"
             hidden

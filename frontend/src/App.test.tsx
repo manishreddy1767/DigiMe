@@ -84,6 +84,13 @@ function installAppFetch(handler: AppFetchHandler) {
         updated_at: "",
       });
     }
+    if (
+      path.startsWith("/api/conversations/") &&
+      path.endsWith("/memory-suggestions") &&
+      (!init?.method || init.method === "GET")
+    ) {
+      return jsonResponse([]);
+    }
     if (path.startsWith("/api/memories") && (!init?.method || init.method === "GET")) {
       return jsonResponse([]);
     }
