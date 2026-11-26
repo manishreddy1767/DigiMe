@@ -17,6 +17,9 @@ memories.
   FTS5 search, editing, deletion, and relevant-memory retrieval.
 - Persistent digital personality settings for name, communication style,
   response length, and custom instructions.
+- Follow-up-aware use of bounded recent turns during approved-memory search,
+  cautious handling of unknown personal facts, and warnings for a small set of
+  clearly conflicting saved attributes.
 - New-conversation, loading and error states.
 - A model-free procedural avatar with gentle head/shoulder movement, irregular
   blinking, eye gaze, and locally animated facial features.
@@ -194,14 +197,25 @@ available in the interface.
 With the optional memory extra installed and the embedding model cached,
 approved memories use local 384-dimensional MiniLM embeddings plus FTS5 for
 hybrid retrieval. Embeddings are cached with each memory and refreshed when its
-content changes; importance can be adjusted from 1 (low) to 5 (high) and helps
-rank retrieved memories. Saving or editing a memory that resembles another
-shows a warning; the app never merges or deletes memories automatically.
+content changes; weak semantic matches are excluded, and importance has only a
+small effect on the ranking of otherwise relevant results. Follow-up messages
+can include a bounded slice of recent turns in the search query; ordinary
+standalone questions search using only the latest message. Saving or editing a
+memory that resembles another shows a warning; the app never merges or deletes
+memories automatically.
 
 Use **Suggest from current conversation** to ask the local Ollama model for
 possible durable memories. Suggestions remain pending and separate from
 approved memories. Review, set importance, then explicitly approve or dismiss
 each suggestion; nothing is saved as a long-term memory without approval.
+
+Chat prompts ask the local model to distinguish known information from
+uncertainty, avoid guessing personal facts, and request clarification only when
+needed. A deterministic heuristic flags conflicting saved residence, employer,
+or favorite-value statements when they are retrieved; it does not determine
+which statement is current. These are prompt and retrieval safeguards, not
+calibrated confidence scores or guarantees against model errors. Other kinds
+of contradictions may not be detected.
 
 ## Tests
 
