@@ -1,6 +1,7 @@
 import os
 import re
 import sqlite3
+import struct
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -110,9 +111,24 @@ class Database:
                 CREATE TABLE IF NOT EXISTS memories (
                     id TEXT PRIMARY KEY,
                     content TEXT NOT NULL,
+                    importance INTEGER NOT NULL DEFAULT 3 CHECK (importance BETWEEN 1 AND 5),
+                    embedding BLOB,
+                    embedding_model TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS memory_suggestions (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                    content TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'approved', 'dismissed')),
+                    memory_id TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (conversation_id, content COLLATE NOCASE)
+                );
+                CREATE INDEX IF NOT EXISTS suggestions_by_conversation
+                    ON memory_suggestions(conversation_id, status, created_at);
                 CREATE VIRTUAL TABLE IF NOT EXISTS memory_search USING fts5(content);
                 CREATE TRIGGER IF NOT EXISTS memories_after_insert
                     AFTER INSERT ON memories BEGIN
@@ -131,6 +147,18 @@ class Database:
                     END;
                 """
             )
+            memory_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(memories)").fetchall()
+            }
+            if "importance" not in memory_columns:
+                connection.execute(
+                    "ALTER TABLE memories ADD COLUMN importance INTEGER NOT NULL DEFAULT 3"
+                )
+            if "embedding" not in memory_columns:
+                connection.execute("ALTER TABLE memories ADD COLUMN embedding BLOB")
+            if "embedding_model" not in memory_columns:
+                connection.execute("ALTER TABLE memories ADD COLUMN embedding_model TEXT")
 
     @staticmethod
     def _now() -> str:
@@ -146,10 +174,11 @@ class Database:
         }
 
     @staticmethod
-    def _memory_dict(row: sqlite3.Row) -> dict[str, str]:
+    def _memory_dict(row: sqlite3.Row) -> dict[str, object]:
         return {
             "id": row["id"],
             "content": row["content"],
+            "importance": row["importance"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -292,23 +321,47 @@ class Database:
     def reset_personality(self) -> dict[str, str]:
         return self.update_personality(**DEFAULT_PERSONALITY)
 
-    def create_memory(self, content: str) -> dict[str, str]:
+    def create_memory(
+        self,
+        content: str,
+        importance: int = 3,
+        embedding: bytes | None = None,
+        embedding_model: str | None = None,
+    ) -> dict[str, object]:
         memory_id = str(uuid4())
         now = self._now()
         with self._connection() as connection:
             connection.execute(
                 """
-                INSERT INTO memories (id, content, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO memories (
+                    id, content, importance, embedding, embedding_model,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (memory_id, content, now, now),
+                (
+                    memory_id,
+                    content,
+                    importance,
+                    embedding,
+                    embedding_model if embedding is not None else None,
+                    now,
+                    now,
+                ),
             )
             row = connection.execute(
                 "SELECT * FROM memories WHERE id = ?", (memory_id,)
             ).fetchone()
         return self._memory_dict(row)
 
-    def list_memories(self, query: str | None = None) -> list[dict[str, str]]:
+    def get_memory(self, memory_id: str) -> dict[str, object] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone()
+        return self._memory_dict(row) if row is not None else None
+
+    def list_memories(self, query: str | None = None) -> list[dict[str, object]]:
         if query and query.strip():
             return self.search_memories(query)
         with self._connection() as connection:
@@ -317,7 +370,7 @@ class Database:
             ).fetchall()
         return [self._memory_dict(row) for row in rows]
 
-    def search_memories(self, query: str, limit: int = 5) -> list[dict[str, str]]:
+    def search_memories(self, query: str, limit: int = 5) -> list[dict[str, object]]:
         terms = [
             term
             for term in re.findall(r"[\w]{2,}", query, flags=re.UNICODE)
@@ -329,23 +382,192 @@ class Database:
         with self._connection() as connection:
             rows = connection.execute(
                 """
-                SELECT memories.*, bm25(memory_search) AS relevance
+                SELECT memories.*
                 FROM memory_search
                 JOIN memories ON memories.rowid = memory_search.rowid
                 WHERE memory_search MATCH ?
-                ORDER BY relevance, memories.updated_at DESC
+                ORDER BY bm25(memory_search), memories.updated_at DESC
                 LIMIT ?
                 """,
                 (match_expression, limit),
             ).fetchall()
         return [self._memory_dict(row) for row in rows]
 
-    def update_memory(self, memory_id: str, content: str) -> dict[str, str]:
+    @staticmethod
+    def _cosine_similarity(left: bytes, right: bytes) -> float | None:
+        if not left or len(left) != len(right) or len(left) % 4:
+            return None
+        dimensions = len(left) // 4
+        left_values = struct.unpack(f"<{dimensions}f", left)
+        right_values = struct.unpack(f"<{dimensions}f", right)
+        dot_product = sum(a * b for a, b in zip(left_values, right_values))
+        left_norm = sum(value * value for value in left_values) ** 0.5
+        right_norm = sum(value * value for value in right_values) ** 0.5
+        if left_norm == 0 or right_norm == 0:
+            return None
+        return dot_product / (left_norm * right_norm)
+
+    def search_memories_hybrid(
+        self,
+        query: str,
+        query_embedding: bytes | None,
+        embedding_model: str,
+        limit: int = 5,
+    ) -> list[dict[str, object]]:
+        lexical_results = self.search_memories(query, limit=50)
+        lexical_ranks = {
+            memory["id"]: 1 - index / max(len(lexical_results), 1)
+            for index, memory in enumerate(lexical_results)
+        }
+
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM memories
+                WHERE embedding IS NOT NULL AND embedding_model = ?
+                """,
+                (embedding_model,),
+            ).fetchall()
+
+        similarities: dict[str, float] = {}
+        for row in rows:
+            similarity = (
+                self._cosine_similarity(query_embedding, row["embedding"])
+                if query_embedding is not None
+                else None
+            )
+            if similarity is not None:
+                similarities[row["id"]] = similarity
+
+        semantic_candidates = sorted(
+            (
+                (memory_id, score)
+                for memory_id, score in similarities.items()
+                if score >= 0.15
+            ),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:50]
+        candidate_ids = set(lexical_ranks)
+        candidate_ids.update(memory_id for memory_id, _ in semantic_candidates)
+        if not candidate_ids:
+            return []
+
+        with self._connection() as connection:
+            placeholders = ",".join("?" for _ in candidate_ids)
+            candidate_rows = connection.execute(
+                f"SELECT * FROM memories WHERE id IN ({placeholders})",
+                tuple(candidate_ids),
+            ).fetchall()
+
+        ranked: list[dict[str, object]] = []
+        for row in candidate_rows:
+            fts_score = lexical_ranks.get(row["id"], 0.0)
+            similarity = similarities.get(row["id"])
+            importance_score = row["importance"] / 5
+            if query_embedding is not None:
+                semantic_score = max(similarity or 0.0, 0.0)
+                relevance = (
+                    0.65 * semantic_score
+                    + 0.25 * fts_score
+                    + 0.10 * importance_score
+                )
+            else:
+                relevance = 0.8 * fts_score + 0.2 * importance_score
+            ranked.append(
+                {
+                    **self._memory_dict(row),
+                    "similarity": similarity,
+                    "relevance": relevance,
+                }
+            )
+        return sorted(
+            ranked,
+            key=lambda memory: (
+                memory["relevance"],
+                memory["importance"],
+                memory["updated_at"],
+            ),
+            reverse=True,
+        )[:limit]
+
+    def find_similar_memories(
+        self,
+        content: str,
+        embedding: bytes | None,
+        embedding_model: str,
+        limit: int = 5,
+        exclude_id: str | None = None,
+    ) -> list[dict[str, object]]:
+        normalized_content = " ".join(content.casefold().split())
+        with self._connection() as connection:
+            rows = connection.execute("SELECT * FROM memories").fetchall()
+
+        similar: list[dict[str, object]] = []
+        for row in rows:
+            if row["id"] == exclude_id:
+                continue
+            exact_duplicate = (
+                " ".join(row["content"].casefold().split()) == normalized_content
+            )
+            similarity = (
+                self._cosine_similarity(embedding, row["embedding"])
+                if embedding is not None
+                and row["embedding_model"] == embedding_model
+                else None
+            )
+            if not exact_duplicate and (similarity is None or similarity < 0.72):
+                continue
+            similar.append(
+                {
+                    **self._memory_dict(row),
+                    "similarity": 1.0 if exact_duplicate else similarity,
+                    "kind": "duplicate" if exact_duplicate else "similar",
+                }
+            )
+        return sorted(
+            similar,
+            key=lambda memory: (
+                memory["kind"] == "duplicate",
+                memory["similarity"] or 0,
+            ),
+            reverse=True,
+        )[:limit]
+
+    def update_memory(
+        self,
+        memory_id: str,
+        content: str,
+        importance: int = 3,
+        embedding: bytes | None = None,
+        embedding_model: str | None = None,
+    ) -> dict[str, object]:
         now = self._now()
         with self._connection() as connection:
+            previous = connection.execute(
+                "SELECT content, embedding, embedding_model FROM memories WHERE id = ?",
+                (memory_id,),
+            ).fetchone()
+            if previous is None:
+                raise RecordNotFoundError("Memory not found.")
+            if previous["content"] == content and embedding is None:
+                embedding = previous["embedding"]
+                embedding_model = previous["embedding_model"]
             cursor = connection.execute(
-                "UPDATE memories SET content = ?, updated_at = ? WHERE id = ?",
-                (content, now, memory_id),
+                """
+                UPDATE memories
+                SET content = ?, importance = ?, embedding = ?, embedding_model = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    content,
+                    importance,
+                    embedding,
+                    embedding_model if embedding is not None else None,
+                    now,
+                    memory_id,
+                ),
             )
             if cursor.rowcount == 0:
                 raise RecordNotFoundError("Memory not found.")
@@ -353,6 +575,129 @@ class Database:
                 "SELECT * FROM memories WHERE id = ?", (memory_id,)
             ).fetchone()
         return self._memory_dict(row)
+
+    @staticmethod
+    def _suggestion_dict(row: sqlite3.Row) -> dict[str, str]:
+        return {
+            "id": row["id"],
+            "conversation_id": row["conversation_id"],
+            "content": row["content"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+        }
+
+    def create_memory_suggestions(
+        self,
+        conversation_id: str,
+        contents: list[str],
+    ) -> list[dict[str, str]]:
+        now = self._now()
+        with self._connection() as connection:
+            for content in contents:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO memory_suggestions (
+                        id, conversation_id, content, created_at
+                    )
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (str(uuid4()), conversation_id, content, now),
+                )
+            rows = connection.execute(
+                """
+                SELECT * FROM memory_suggestions
+                WHERE conversation_id = ? AND status = 'pending'
+                ORDER BY created_at, id
+                """,
+                (conversation_id,),
+            ).fetchall()
+        return [self._suggestion_dict(row) for row in rows]
+
+    def list_memory_suggestions(
+        self,
+        conversation_id: str,
+    ) -> list[dict[str, str]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM memory_suggestions
+                WHERE conversation_id = ? AND status = 'pending'
+                ORDER BY created_at, id
+                """,
+                (conversation_id,),
+            ).fetchall()
+        return [self._suggestion_dict(row) for row in rows]
+
+    def get_memory_suggestion(self, suggestion_id: str) -> dict[str, str] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM memory_suggestions
+                WHERE id = ? AND status = 'pending'
+                """,
+                (suggestion_id,),
+            ).fetchone()
+        return self._suggestion_dict(row) if row is not None else None
+
+    def approve_memory_suggestion(
+        self,
+        suggestion_id: str,
+        importance: int,
+        embedding: bytes | None,
+        embedding_model: str,
+    ) -> dict[str, object] | None:
+        now = self._now()
+        memory_id = str(uuid4())
+        with self._connection() as connection:
+            suggestion = connection.execute(
+                """
+                SELECT * FROM memory_suggestions
+                WHERE id = ? AND status = 'pending'
+                """,
+                (suggestion_id,),
+            ).fetchone()
+            if suggestion is None:
+                return None
+            connection.execute(
+                """
+                INSERT INTO memories (
+                    id, content, importance, embedding, embedding_model,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    memory_id,
+                    suggestion["content"],
+                    importance,
+                    embedding,
+                    embedding_model if embedding is not None else None,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE memory_suggestions SET status = 'approved', memory_id = ?
+                WHERE id = ?
+                """,
+                (memory_id, suggestion_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone()
+        return self._memory_dict(row)
+
+    def dismiss_memory_suggestion(self, suggestion_id: str) -> bool:
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE memory_suggestions SET status = 'dismissed'
+                WHERE id = ? AND status = 'pending'
+                """,
+                (suggestion_id,),
+            )
+        return cursor.rowcount > 0
 
     def delete_memory(self, memory_id: str) -> bool:
         with self._connection() as connection:
