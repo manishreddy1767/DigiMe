@@ -28,6 +28,10 @@ def test_memories_require_explicit_save_and_support_search_edit_and_delete(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setenv("DIGITAL_ME_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "app.main.try_embed_text",
+        lambda text: (None, "Test embeddings unavailable."),
+    )
     client = TestClient(app)
     with patch(
         "app.main.OllamaService.generate_chat_response",
@@ -49,8 +53,8 @@ def test_memories_require_explicit_save_and_support_search_edit_and_delete(
     )
 
     assert saved.status_code == 201
-    assert client.get("/api/memories?q=mountain+hikes").json() == [saved.json()]
-    assert client.get("/api/memories?q=jazz").json() == [second.json()]
+    assert client.get("/api/memories?q=mountain+hikes").json()[0]["id"] == saved.json()["id"]
+    assert client.get("/api/memories?q=jazz").json()[0]["id"] == second.json()["id"]
 
     edited = client.put(
         f"/api/memories/{saved.json()['id']}",
@@ -58,7 +62,7 @@ def test_memories_require_explicit_save_and_support_search_edit_and_delete(
     )
     assert edited.status_code == 200
     assert client.get("/api/memories?q=mountain").json() == []
-    assert client.get("/api/memories?q=coastal").json() == [edited.json()]
+    assert client.get("/api/memories?q=coastal").json()[0]["id"] == edited.json()["id"]
 
     assert client.delete(f"/api/memories/{saved.json()['id']}").status_code == 204
     assert client.get("/api/memories?q=coastal").json() == []

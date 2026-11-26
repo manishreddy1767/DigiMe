@@ -4,12 +4,12 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.services.embeddings import EMBEDDING_MODEL, try_embed_text
 from app.services.ollama import OllamaService
 from app.services.speech import get_kokoro_service, get_whisper_service
 from app.services.storage import (
     DEFAULT_PERSONALITY,
     Database,
-    RecordNotFoundError,
 )
 
 app = FastAPI(
@@ -86,6 +86,8 @@ class PersonalityUpdate(BaseModel):
 
 class MemoryRequest(BaseModel):
     content: str = Field(min_length=1, max_length=2_000)
+    importance: int = Field(default=3, ge=1, le=5)
+    confirm_similar: bool = False
 
     @field_validator("content")
     @classmethod
@@ -94,6 +96,11 @@ class MemoryRequest(BaseModel):
         if not value:
             raise ValueError("Memory content must not be blank.")
         return value
+
+
+class MemorySuggestionApproval(BaseModel):
+    importance: int = Field(default=3, ge=1, le=5)
+    confirm_similar: bool = False
 
 
 class TTSRequest(BaseModel):
@@ -178,21 +185,146 @@ def reset_personality() -> dict[str, str]:
 @app.get("/api/memories")
 def list_memories(
     query: str | None = Query(default=None, alias="q", max_length=500),
-) -> list[dict[str, str]]:
+) -> list[dict[str, object]]:
     return Database().list_memories(query)
 
 
 @app.post("/api/memories", status_code=201)
-def create_memory(memory: MemoryRequest) -> dict[str, str]:
-    return Database().create_memory(memory.content)
+def create_memory(memory: MemoryRequest) -> dict[str, object]:
+    database = Database()
+    embedding, warning = try_embed_text(memory.content)
+    similar = database.find_similar_memories(
+        memory.content,
+        embedding,
+        EMBEDDING_MODEL,
+    )
+    if similar and not memory.confirm_similar:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "This looks similar to an existing memory. Review it before saving.",
+                "similar_memories": similar,
+            },
+        )
+    saved = database.create_memory(
+        memory.content,
+        importance=memory.importance,
+        embedding=embedding,
+        embedding_model=EMBEDDING_MODEL,
+    )
+    if warning:
+        saved["embedding_warning"] = warning
+    return saved
 
 
 @app.put("/api/memories/{memory_id}")
-def update_memory(memory_id: str, memory: MemoryRequest) -> dict[str, str]:
+def update_memory(memory_id: str, memory: MemoryRequest) -> dict[str, object]:
+    database = Database()
+    existing = database.get_memory(memory_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Memory not found.")
+
+    embedding = None
+    warning = None
+    if existing["content"] != memory.content:
+        embedding, warning = try_embed_text(memory.content)
+        similar = database.find_similar_memories(
+            memory.content,
+            embedding,
+            EMBEDDING_MODEL,
+            exclude_id=memory_id,
+        )
+        if similar and not memory.confirm_similar:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "This looks similar to another memory. Review it before saving.",
+                    "similar_memories": similar,
+                },
+            )
+    updated = database.update_memory(
+        memory_id,
+        memory.content,
+        importance=memory.importance,
+        embedding=embedding,
+        embedding_model=EMBEDDING_MODEL,
+    )
+    if warning:
+        updated["embedding_warning"] = warning
+    return updated
+
+
+@app.get("/api/conversations/{conversation_id}/memory-suggestions")
+def list_memory_suggestions(conversation_id: str) -> list[dict[str, str]]:
+    database = Database()
+    if database.get_conversation(conversation_id) is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return database.list_memory_suggestions(conversation_id)
+
+
+@app.post("/api/conversations/{conversation_id}/memory-suggestions")
+def suggest_memories(conversation_id: str) -> list[dict[str, str]]:
+    database = Database()
+    conversation = database.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    messages = [
+        {"role": message["role"], "content": message["content"]}
+        for message in conversation["messages"]
+    ]
+    if not any(message["role"] == "user" for message in messages):
+        raise HTTPException(
+            status_code=422,
+            detail="Add a user message before suggesting memories.",
+        )
     try:
-        return Database().update_memory(memory_id, memory.content)
-    except RecordNotFoundError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+        suggestions = OllamaService().generate_memory_suggestions(messages)
+    except RuntimeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    return database.create_memory_suggestions(conversation_id, suggestions)
+
+
+@app.post("/api/memory-suggestions/{suggestion_id}/approve", status_code=201)
+def approve_memory_suggestion(
+    suggestion_id: str,
+    approval: MemorySuggestionApproval,
+) -> dict[str, object]:
+    database = Database()
+    suggestion = database.get_memory_suggestion(suggestion_id)
+    if suggestion is None:
+        raise HTTPException(status_code=404, detail="Pending memory suggestion not found.")
+    embedding, warning = try_embed_text(suggestion["content"])
+    similar = database.find_similar_memories(
+        suggestion["content"],
+        embedding,
+        EMBEDDING_MODEL,
+    )
+    if similar and not approval.confirm_similar:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "This suggestion is similar to an existing memory. Review it before approval.",
+                "similar_memories": similar,
+            },
+        )
+    saved = database.approve_memory_suggestion(
+        suggestion_id,
+        approval.importance,
+        embedding,
+        EMBEDDING_MODEL,
+    )
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Pending memory suggestion not found.")
+    if warning:
+        saved["embedding_warning"] = warning
+    return saved
+
+
+@app.delete("/api/memory-suggestions/{suggestion_id}", status_code=204)
+def dismiss_memory_suggestion(suggestion_id: str) -> Response:
+    if not Database().dismiss_memory_suggestion(suggestion_id):
+        raise HTTPException(status_code=404, detail="Pending memory suggestion not found.")
+    return Response(status_code=204)
 
 
 @app.delete("/api/memories/{memory_id}", status_code=204)
@@ -238,7 +370,16 @@ def chat(request: ChatRequest) -> ChatResponse:
             + "\n".join(filled_profile)
         )
 
-    relevant_memories = database.search_memories(latest_message.content)
+    memories = database.list_memories()
+    if memories:
+        query_embedding, _ = try_embed_text(latest_message.content)
+        relevant_memories = database.search_memories_hybrid(
+            latest_message.content,
+            query_embedding,
+            EMBEDDING_MODEL,
+        )
+    else:
+        relevant_memories = []
     if relevant_memories:
         context_sections.append(
             "Explicitly approved long-term memories:\n"

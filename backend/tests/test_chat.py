@@ -97,6 +97,39 @@ def test_ollama_chat_uses_local_qwen_and_returns_mocked_response() -> None:
     assert result == "Hello from the local model."
 
 
+def test_ollama_memory_suggestions_are_local_json_and_bounded() -> None:
+    mocked_response = MockResponse(
+        json.dumps(
+            {
+                "message": {
+                    "content": json.dumps(
+                        [
+                            "  I enjoy hiking.  ",
+                            "I enjoy hiking.",
+                            "x" * 501,
+                            "I prefer concise replies.",
+                            12,
+                        ]
+                    )
+                }
+            }
+        ).encode()
+    )
+    with patch(
+        "app.services.ollama.urlopen",
+        return_value=mocked_response,
+    ) as mocked_urlopen:
+        suggestions = OllamaService().generate_memory_suggestions(
+            [{"role": "user", "content": "I enjoy hiking and concise replies."}]
+        )
+
+    request = mocked_urlopen.call_args.args[0]
+    request_body = json.loads(request.data)
+    assert request.full_url == "http://127.0.0.1:11434/api/chat"
+    assert request_body["format"] == "json"
+    assert suggestions == ["I enjoy hiking.", "I prefer concise replies."]
+
+
 def test_endpoint_persists_chat_and_rejects_invalid_history(
     tmp_path, monkeypatch
 ) -> None:
@@ -204,6 +237,10 @@ def test_chat_receives_profile_and_only_relevant_approved_memories(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setenv("DIGITAL_ME_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "app.main.try_embed_text",
+        lambda text: (None, "Test embeddings unavailable."),
+    )
     client = TestClient(app)
     client.put(
         "/api/profile",

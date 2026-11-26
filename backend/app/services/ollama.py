@@ -133,6 +133,77 @@ class OllamaService:
 
         return text
 
+    def generate_memory_suggestions(
+        self,
+        messages: list[dict[str, str]],
+    ) -> list[str]:
+        bounded_messages = build_bounded_chat_messages(messages)
+        bounded_messages[0] = {
+            "role": "system",
+            "content": (
+                "Review this conversation and propose at most five short, durable "
+                "personal facts or preferences the user may want to remember. Use "
+                "only statements the user explicitly made; do not infer facts or "
+                "include temporary details. Return only a JSON array of strings. "
+                "An empty array is appropriate when nothing is useful."
+            ),
+        }
+        request_body = {
+            "model": MODEL,
+            "messages": bounded_messages,
+            "stream": False,
+            "format": "json",
+            "options": {
+                "num_ctx": CONTEXT_SIZE,
+            },
+        }
+        request = Request(
+            f"{OLLAMA_URL}/api/chat",
+            data=json.dumps(request_body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urlopen(request, timeout=600) as response:
+                payload = json.load(response)
+        except (URLError, TimeoutError) as error:
+            raise RuntimeError(
+                "Could not reach Ollama at 127.0.0.1:11434 to suggest memories."
+            ) from error
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise RuntimeError("Ollama returned an invalid memory-suggestion response.") from error
+
+        response_message = payload.get("message") if isinstance(payload, dict) else None
+        text = (
+            response_message.get("content", "").strip()
+            if isinstance(response_message, dict)
+            and isinstance(response_message.get("content"), str)
+            else ""
+        )
+        if not text:
+            raise RuntimeError("Ollama returned no memory suggestions.")
+        try:
+            suggestions = json.loads(text)
+        except json.JSONDecodeError as error:
+            raise RuntimeError("Ollama returned invalid memory-suggestion JSON.") from error
+        if not isinstance(suggestions, list):
+            raise RuntimeError("Ollama returned an invalid memory-suggestion list.")
+
+        accepted: list[str] = []
+        seen: set[str] = set()
+        for item in suggestions:
+            if not isinstance(item, str):
+                continue
+            content = " ".join(item.split())
+            normalized = content.casefold()
+            if content and len(content) <= 500 and normalized not in seen:
+                accepted.append(content)
+                seen.add(normalized)
+            if len(accepted) == 5:
+                break
+        return accepted
+
 
 def build_bounded_chat_messages(
     messages: list[dict[str, str]],
