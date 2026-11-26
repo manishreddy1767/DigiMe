@@ -20,6 +20,7 @@ export interface AvatarAnimationFrame {
 export function getAvatarAnimationFrame(
   state: AvatarAnimationState,
   elapsedSeconds: number,
+  audioAmplitude: number | null = null,
 ): AvatarAnimationFrame {
   const blinkPeriod = 4.2;
   const blinkDuration = 0.18;
@@ -34,7 +35,11 @@ export function getAvatarAnimationFrame(
       happy: state === "happy" ? 0.28 : 0,
       relaxed: state === "thinking" ? 0.12 : 0,
       lookUp: state === "thinking" ? 0.14 : 0,
-      aa: state === "speaking" ? 0.08 + 0.05 * Math.sin(elapsedSeconds * 8) : 0,
+      aa: state !== "speaking"
+        ? 0
+        : audioAmplitude === null
+          ? 0.08 + 0.05 * Math.sin(elapsedSeconds * 8)
+          : Math.max(0, Math.min(audioAmplitude, 0.65)),
       blink,
     },
     headRotation: {

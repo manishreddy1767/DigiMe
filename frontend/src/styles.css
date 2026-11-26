@@ -349,6 +349,14 @@ h2 {
   color: #ffc5cb;
 }
 
+.recording-controls .voice-status {
+  color: #a9c8ff;
+}
+
+.recording-controls .voice-runtime-note {
+  color: #d7c28f;
+}
+
 .composer {
   display: flex;
   align-items: flex-end;
@@ -423,6 +431,20 @@ h2 {
 .memory-search label {
   color: #aebbd0;
   font-size: 0.78rem;
+}
+
+.settings-form .voice-setting {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.settings-form .voice-setting input {
+  width: auto;
+  min-width: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: #8eb3f4;
 }
 
 .settings-form input,

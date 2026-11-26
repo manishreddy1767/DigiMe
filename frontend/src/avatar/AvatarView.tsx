@@ -8,12 +8,13 @@ interface AvatarViewProps {
   state: AvatarAnimationState;
   onLoaded: () => void;
   onError: (message: string) => void;
+  getAudioAmplitude: () => number | null;
 }
 
 const MODEL_URL = "/models/avatar.vrm";
 const EXPRESSION_NAMES = ["neutral", "happy", "relaxed", "lookUp", "aa", "blink"] as const;
 
-function AvatarView({ state, onLoaded, onError }: AvatarViewProps) {
+function AvatarView({ state, onLoaded, onError, getAudioAmplitude }: AvatarViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -108,7 +109,15 @@ function AvatarView({ state, onLoaded, onError }: AvatarViewProps) {
       const delta = clock.getDelta();
       elapsedSeconds += delta;
       if (loadedVrm) {
-        const frame = getAvatarAnimationFrame(stateRef.current, elapsedSeconds);
+        const currentState = stateRef.current;
+        const audioAmplitude = currentState === "speaking"
+          ? getAudioAmplitude()
+          : null;
+        const frame = getAvatarAnimationFrame(
+          currentState,
+          elapsedSeconds,
+          audioAmplitude,
+        );
         const expressionManager = loadedVrm.expressionManager;
         if (expressionManager) {
           for (const name of EXPRESSION_NAMES) {
@@ -162,7 +171,7 @@ function AvatarView({ state, onLoaded, onError }: AvatarViewProps) {
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [onError, onLoaded]);
+  }, [getAudioAmplitude, onError, onLoaded]);
 
   return (
     <div

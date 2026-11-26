@@ -3,6 +3,10 @@ import AvatarView from "./avatar/AvatarView";
 import type { AvatarAnimationState } from "./avatar/avatarAnimation";
 import MemorySettings from "./MemorySettings";
 import PersonalitySettings from "./PersonalitySettings";
+import VoiceSettings, {
+  DEFAULT_VOICE_SETTINGS,
+  type VoiceSettingsValue,
+} from "./VoiceSettings";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -34,6 +38,14 @@ type TranscriptionStatus =
   | "transcribed"
   | "error";
 
+type RecordingMode = "push-to-talk" | "continuous";
+
+type VoiceActivityMonitor = {
+  context: AudioContext;
+  source: MediaStreamAudioSourceNode;
+  frameId: number;
+};
+
 const IDLE_SPEECH_STATE: SpeechState = {
   status: "idle",
   messageIndex: null,
@@ -41,6 +53,10 @@ const IDLE_SPEECH_STATE: SpeechState = {
 };
 
 const MAX_RECORDING_BYTES = 20 * 1024 * 1024;
+const MAX_SPOKEN_RESPONSE_CHARACTERS = 4_000;
+const VOICE_SILENCE_THRESHOLD = 0.018;
+const VOICE_SILENCE_DURATION_MS = 900;
+const MIN_VOICE_DURATION_MS = 350;
 
 function stopStream(stream: MediaStream | null) {
   stream?.getTracks().forEach((track) => track.stop());
@@ -57,6 +73,9 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [speech, setSpeech] = useState<SpeechState>(IDLE_SPEECH_STATE);
+  const [voiceSettings, setVoiceSettings] = useState(DEFAULT_VOICE_SETTINGS);
+  const [voiceSessionActive, setVoiceSessionActive] = useState(false);
+  const [voiceRuntimeError, setVoiceRuntimeError] = useState<string | null>(null);
   const [transcriptionStatus, setTranscriptionStatus] =
     useState<TranscriptionStatus>("idle");
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
@@ -67,6 +86,10 @@ function App() {
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioUrl = useRef<string | null>(null);
   const audioMessageIndex = useRef<number | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const audioAnalyserRef = useRef<AnalyserNode | null>(null);
+  const audioAmplitudeBufferRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const transcriptionRequestId = useRef(0);
   const conversationRequestId = useRef(0);
   const conversationChangedByUser = useRef(false);
@@ -76,7 +99,11 @@ function App() {
   const recordingChunks = useRef<Blob[]>([]);
   const recordingBytes = useRef(0);
   const recordingTooLarge = useRef(false);
+  const recordingOperationActiveRef = useRef(false);
+  const interruptingRef = useRef(false);
   const draftBeforeRecording = useRef("");
+  const voiceSessionActiveRef = useRef(false);
+  const voiceActivityMonitorRef = useRef<VoiceActivityMonitor | null>(null);
   const avatarState: AvatarAnimationState = loading
     ? "thinking"
     : speech.status === "playing"
@@ -86,7 +113,20 @@ function App() {
     transcriptionStatus,
   );
 
+  const stopVoiceActivityMonitor = () => {
+    const monitor = voiceActivityMonitorRef.current;
+    if (!monitor) return;
+    voiceActivityMonitorRef.current = null;
+    window.cancelAnimationFrame(monitor.frameId);
+    monitor.source.disconnect();
+    void monitor.context.close().catch((closeError: unknown) => {
+      console.warn("Could not close the microphone audio analyzer.", closeError);
+    });
+  };
+
   useEffect(() => () => {
+    voiceSessionActiveRef.current = false;
+    stopVoiceActivityMonitor();
     speechRequestId.current += 1;
     speechController.current?.abort();
     audioRef.current?.pause();
@@ -94,6 +134,7 @@ function App() {
       URL.revokeObjectURL(audioUrl.current);
     }
     transcriptionRequestId.current += 1;
+    recordingOperationActiveRef.current = false;
     transcriptionController.current?.abort();
     const recorder = mediaRecorder.current;
     if (recorder && recorder.state !== "inactive") {
@@ -103,6 +144,15 @@ function App() {
       recorder.stop();
     }
     stopStream(recordingStream.current);
+    audioSourceRef.current?.disconnect();
+    audioAnalyserRef.current?.disconnect();
+    const audioContext = audioContextRef.current;
+    if (audioContext) {
+      audioContextRef.current = null;
+      void audioContext.close().catch((closeError: unknown) => {
+        console.warn("Could not close the audio playback analyzer.", closeError);
+      });
+    }
   }, []);
 
   useEffect(() => {
@@ -208,6 +258,24 @@ function App() {
     setAvatarError(message);
   }, []);
 
+  const handleVoiceSettingsChange = useCallback((settings: VoiceSettingsValue) => {
+    setVoiceSettings(settings);
+  }, []);
+
+  const getAudioAmplitude = useCallback((): number | null => {
+    const analyser = audioAnalyserRef.current;
+    const buffer = audioAmplitudeBufferRef.current;
+    if (!analyser || !buffer) return null;
+    if (audioRef.current?.paused) return 0;
+    analyser.getByteTimeDomainData(buffer);
+    let squaredSum = 0;
+    for (const sample of buffer) {
+      const amplitude = (sample - 128) / 128;
+      squaredSum += amplitude * amplitude;
+    }
+    return Math.min(Math.sqrt(squaredSum / buffer.length) * 3, 0.65);
+  }, []);
+
   const clearAudio = () => {
     const audio = audioRef.current;
     if (audio) {
@@ -222,6 +290,69 @@ function App() {
     audioMessageIndex.current = null;
   };
 
+  const preparePlaybackAnalyser = async (audio: HTMLAudioElement) => {
+    if (audioSourceRef.current) {
+      if (audioContextRef.current?.state === "suspended") {
+        try {
+          await audioContextRef.current.resume();
+        } catch (resumeError) {
+          setVoiceRuntimeError(
+            resumeError instanceof Error
+              ? `Audio playback analyzer could not resume: ${resumeError.message}`
+              : "Audio playback analyzer could not resume.",
+          );
+          throw resumeError;
+        }
+      }
+      return;
+    }
+
+    if (typeof window.AudioContext === "undefined") {
+      setVoiceRuntimeError(
+        "Audio level analysis is unavailable; speech can still play without amplitude-based mouth movement.",
+      );
+      return;
+    }
+
+    let context: AudioContext | null = null;
+    let source: MediaElementAudioSourceNode | null = null;
+    try {
+      context = new window.AudioContext();
+      await context.resume();
+      source = context.createMediaElementSource(audio);
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyser.connect(context.destination);
+      audioContextRef.current = context;
+      audioSourceRef.current = source;
+      audioAnalyserRef.current = analyser;
+      audioAmplitudeBufferRef.current = new Uint8Array(analyser.fftSize);
+      setVoiceRuntimeError(null);
+    } catch (analysisError) {
+      if (source && context) {
+        source.disconnect();
+        try {
+          source.connect(context.destination);
+          audioContextRef.current = context;
+          audioSourceRef.current = source;
+        } catch (connectionError) {
+          console.warn("Could not preserve audio output after analyzer setup failed.", connectionError);
+        }
+      }
+      if (context && !source) {
+        void context.close().catch((closeError: unknown) => {
+          console.warn("Could not close the unused playback analyzer.", closeError);
+        });
+      }
+      setVoiceRuntimeError(
+        analysisError instanceof Error
+          ? `Audio level analysis unavailable: ${analysisError.message}`
+          : "Audio level analysis unavailable; speech can still play.",
+      );
+    }
+  };
+
   const stopSpeech = () => {
     speechRequestId.current += 1;
     speechController.current?.abort();
@@ -230,7 +361,16 @@ function App() {
     setSpeech(IDLE_SPEECH_STATE);
   };
 
-  const transcribeRecording = async (recording: Blob, operationId: number) => {
+  const deactivateVoiceSession = () => {
+    voiceSessionActiveRef.current = false;
+    setVoiceSessionActive(false);
+  };
+
+  const transcribeRecording = async (
+    recording: Blob,
+    operationId: number,
+    mode: RecordingMode,
+  ) => {
     const controller = new AbortController();
     transcriptionController.current = controller;
     setTranscriptionStatus("transcribing");
@@ -268,13 +408,29 @@ function App() {
       if (!text) {
         setTranscriptionStatus("error");
         setTranscriptionError("No speech was recognized. Try recording again.");
+        if (mode === "continuous") deactivateVoiceSession();
         return;
       }
 
-      const previousDraft = draftBeforeRecording.current.trim();
-      setDraft(previousDraft ? `${previousDraft} ${text}` : text);
-      setTranscriptionStatus("transcribed");
-      setTranscriptionError(null);
+      if (mode === "continuous" && voiceSessionActiveRef.current) {
+        if (loading || activeRequest.current !== null) {
+          setDraft(text);
+          setTranscriptionStatus("transcribed");
+          setTranscriptionError(
+            "The transcript was kept in the message box because another chat request is still active.",
+          );
+          deactivateVoiceSession();
+          return;
+        }
+        setTranscriptionStatus("idle");
+        setTranscriptionError(null);
+        await sendMessage(undefined, text);
+      } else {
+        const previousDraft = draftBeforeRecording.current.trim();
+        setDraft(previousDraft ? `${previousDraft} ${text}` : text);
+        setTranscriptionStatus("transcribed");
+        setTranscriptionError(null);
+      }
     } catch (requestError) {
       if (controller.signal.aborted || operationId !== transcriptionRequestId.current) return;
       setTranscriptionStatus("error");
@@ -283,6 +439,7 @@ function App() {
           ? requestError.message
           : "Local transcription failed. Please try again.",
       );
+      if (mode === "continuous") deactivateVoiceSession();
     } finally {
       if (operationId === transcriptionRequestId.current) {
         transcriptionController.current = null;
@@ -290,11 +447,92 @@ function App() {
     }
   };
 
-  const startRecording = async () => {
+  const startVoiceActivityMonitor = async (
+    stream: MediaStream,
+    recorder: MediaRecorder,
+    operationId: number,
+  ): Promise<boolean> => {
+    if (typeof window.AudioContext === "undefined") {
+      setVoiceRuntimeError(
+        "Automatic silence detection is unavailable; stop the recording manually.",
+      );
+      return false;
+    }
+
+    let context: AudioContext | null = null;
+    let source: MediaStreamAudioSourceNode | null = null;
+    try {
+      context = new window.AudioContext();
+      await context.resume();
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 512;
+      source = context.createMediaStreamSource(stream);
+      source.connect(analyser);
+      const samples = new Uint8Array(analyser.fftSize);
+      const startedAt = performance.now();
+      let heardSpeech = false;
+      let lastSoundAt = startedAt;
+      const monitor = () => {
+        if (
+          operationId !== transcriptionRequestId.current ||
+          recorder.state !== "recording"
+        ) {
+          stopVoiceActivityMonitor();
+          return;
+        }
+        analyser.getByteTimeDomainData(samples);
+        let sum = 0;
+        for (const sample of samples) {
+          const amplitude = (sample - 128) / 128;
+          sum += amplitude * amplitude;
+        }
+        const now = performance.now();
+        const rms = Math.sqrt(sum / samples.length);
+        if (rms >= VOICE_SILENCE_THRESHOLD) {
+          heardSpeech = true;
+          lastSoundAt = now;
+        }
+        if (
+          heardSpeech &&
+          now - lastSoundAt >= VOICE_SILENCE_DURATION_MS &&
+          now - startedAt >= MIN_VOICE_DURATION_MS
+        ) {
+          recorder.stop();
+          return;
+        }
+        const currentMonitor = voiceActivityMonitorRef.current;
+        if (currentMonitor) {
+          currentMonitor.frameId = window.requestAnimationFrame(monitor);
+        }
+      };
+      voiceActivityMonitorRef.current = { context, source, frameId: 0 };
+      voiceActivityMonitorRef.current.frameId = window.requestAnimationFrame(monitor);
+      setVoiceRuntimeError(null);
+      return true;
+    } catch (monitorError) {
+      source?.disconnect();
+      if (context) {
+        void context.close().catch((closeError: unknown) => {
+          console.warn("Could not close the microphone audio monitor.", closeError);
+        });
+      }
+      setVoiceRuntimeError(
+        monitorError instanceof Error
+          ? `Automatic silence detection unavailable: ${monitorError.message}`
+          : "Automatic silence detection is unavailable; stop the recording manually.",
+      );
+      return false;
+    }
+  };
+
+  const startRecording = async (mode: RecordingMode = "push-to-talk") => {
     if (
       transcriptionStatus === "requesting" ||
       transcriptionStatus === "recording" ||
-      transcriptionStatus === "transcribing"
+      transcriptionStatus === "transcribing" ||
+      recordingOperationActiveRef.current ||
+      mediaRecorder.current !== null ||
+      transcriptionController.current !== null
     ) {
       return;
     }
@@ -305,10 +543,12 @@ function App() {
     ) {
       setTranscriptionStatus("error");
       setTranscriptionError("Microphone recording is not supported in this browser.");
+      if (mode === "continuous") deactivateVoiceSession();
       return;
     }
 
     const operationId = ++transcriptionRequestId.current;
+    recordingOperationActiveRef.current = true;
     draftBeforeRecording.current = draft;
     recordingChunks.current = [];
     recordingBytes.current = 0;
@@ -338,14 +578,19 @@ function App() {
         recordingChunks.current.push(event.data);
       };
       recorder.onstop = () => {
+        stopVoiceActivityMonitor();
         stopStream(recordingStream.current);
         recordingStream.current = null;
         if (mediaRecorder.current === recorder) mediaRecorder.current = null;
+        if (operationId === transcriptionRequestId.current) {
+          recordingOperationActiveRef.current = false;
+        }
         if (operationId !== transcriptionRequestId.current) return;
         if (recordingTooLarge.current) {
           recordingChunks.current = [];
           setTranscriptionStatus("error");
           setTranscriptionError("Recording exceeded the 20 MB limit. Record a shorter clip.");
+          if (mode === "continuous") deactivateVoiceSession();
           return;
         }
 
@@ -358,13 +603,16 @@ function App() {
         if (recording.size === 0) {
           setTranscriptionStatus("error");
           setTranscriptionError("No audio was captured. Record a short message and try again.");
+          if (mode === "continuous") deactivateVoiceSession();
           return;
         }
-        void transcribeRecording(recording, operationId);
+        void transcribeRecording(recording, operationId, mode);
       };
       recorder.onerror = () => {
         if (operationId !== transcriptionRequestId.current) return;
         transcriptionRequestId.current += 1;
+        recordingOperationActiveRef.current = false;
+        stopVoiceActivityMonitor();
         recordingChunks.current = [];
         recordingBytes.current = 0;
         stopStream(recordingStream.current);
@@ -372,9 +620,13 @@ function App() {
         mediaRecorder.current = null;
         setTranscriptionStatus("error");
         setTranscriptionError("Microphone recording failed. Check the microphone and try again.");
+        if (mode === "continuous") deactivateVoiceSession();
       };
       recorder.start(1_000);
       setTranscriptionStatus("recording");
+      if (mode === "continuous") {
+        void startVoiceActivityMonitor(stream, recorder, operationId);
+      }
     } catch (recordingError) {
       if (operationId !== transcriptionRequestId.current) return;
       const recorder = mediaRecorder.current;
@@ -387,6 +639,9 @@ function App() {
       mediaRecorder.current = null;
       stopStream(recordingStream.current);
       recordingStream.current = null;
+      if (operationId === transcriptionRequestId.current) {
+        recordingOperationActiveRef.current = false;
+      }
       setTranscriptionStatus("error");
       const errorName =
         typeof recordingError === "object" &&
@@ -404,6 +659,7 @@ function App() {
               ? `Could not start microphone recording: ${recordingError.message}`
               : "Could not start microphone recording.",
       );
+      if (mode === "continuous") deactivateVoiceSession();
     }
   };
 
@@ -416,8 +672,10 @@ function App() {
 
   const cancelTranscription = () => {
     transcriptionRequestId.current += 1;
+    recordingOperationActiveRef.current = false;
     transcriptionController.current?.abort();
     transcriptionController.current = null;
+    stopVoiceActivityMonitor();
     const recorder = mediaRecorder.current;
     if (recorder && recorder.state !== "inactive") {
       recorder.ondataavailable = null;
@@ -435,14 +693,65 @@ function App() {
     setTranscriptionError(null);
   };
 
+  const startVoiceConversation = async () => {
+    if (!voiceSettings.continuous_conversation_enabled || voiceSessionActiveRef.current) {
+      return;
+    }
+    stopSpeech();
+    setTranscriptionError(null);
+    setVoiceRuntimeError(null);
+    voiceSessionActiveRef.current = true;
+    setVoiceSessionActive(true);
+    await startRecording("continuous");
+  };
+
+  const stopVoiceConversation = () => {
+    deactivateVoiceSession();
+    cancelTranscription();
+    stopSpeech();
+  };
+
+  useEffect(() => {
+    if (!voiceSettings.continuous_conversation_enabled && voiceSessionActiveRef.current) {
+      stopVoiceConversation();
+    }
+  }, [voiceSettings.continuous_conversation_enabled]);
+
+  const interruptAndListen = async () => {
+    if (interruptingRef.current) return;
+    interruptingRef.current = true;
+    const mode = voiceSessionActiveRef.current ? "continuous" : "push-to-talk";
+    stopSpeech();
+    cancelTranscription();
+    setVoiceRuntimeError(null);
+    try {
+      await startRecording(mode);
+    } finally {
+      interruptingRef.current = false;
+    }
+  };
+
   const discardTranscription = () => {
     setDraft(draftBeforeRecording.current);
     setTranscriptionStatus("idle");
     setTranscriptionError(null);
   };
 
-  const generateSpeech = async (messageIndex: number, text: string) => {
+  const generateSpeech = async (
+    messageIndex: number,
+    text: string,
+    autoPlay = false,
+  ) => {
     stopSpeech();
+    if (text.length > MAX_SPOKEN_RESPONSE_CHARACTERS) {
+      const lengthError =
+        `Speech is limited to ${MAX_SPOKEN_RESPONSE_CHARACTERS.toLocaleString()} characters per reply. ` +
+        "The complete response remains available as text.";
+      setSpeech({ status: "error", messageIndex, error: lengthError });
+      if (autoPlay && voiceSessionActiveRef.current) deactivateVoiceSession();
+      return;
+    }
+
     const controller = new AbortController();
     const currentRequestId = ++speechRequestId.current;
     speechController.current = controller;
@@ -481,6 +790,7 @@ function App() {
       audioMessageIndex.current = messageIndex;
       audio.src = objectUrl;
       setSpeech({ status: "ready", messageIndex, error: null });
+      if (autoPlay) await playSpeech(messageIndex);
     } catch (requestError) {
       if (controller.signal.aborted || currentRequestId !== speechRequestId.current) return;
       setSpeech({
@@ -490,6 +800,7 @@ function App() {
           ? requestError.message
           : "Local speech generation failed. Please try again.",
       });
+      if (autoPlay && voiceSessionActiveRef.current) deactivateVoiceSession();
     } finally {
       if (currentRequestId === speechRequestId.current) {
         speechController.current = null;
@@ -512,6 +823,7 @@ function App() {
       if (!resume) {
         audio.currentTime = 0;
       }
+      await preparePlaybackAnalyser(audio);
       await audio.play();
       if (audioUrl.current === currentAudioUrl) {
         setSpeech({ status: "playing", messageIndex, error: null });
@@ -525,6 +837,7 @@ function App() {
           ? playError.message
           : "Audio playback failed. Please try again.",
       });
+      if (voiceSessionActiveRef.current) deactivateVoiceSession();
     }
   };
 
@@ -535,8 +848,7 @@ function App() {
     requestId.current += 1;
     activeRequest.current?.abort();
     activeRequest.current = null;
-    stopSpeech();
-    cancelTranscription();
+    stopVoiceConversation();
     setConversationId(selectedId);
     setMessages([]);
     setDraft("");
@@ -599,8 +911,7 @@ function App() {
     requestId.current += 1;
     activeRequest.current?.abort();
     activeRequest.current = null;
-    stopSpeech();
-    cancelTranscription();
+    stopVoiceConversation();
     setMessages([]);
     setDraft("");
     setError(null);
@@ -657,8 +968,7 @@ function App() {
     requestId.current += 1;
     activeRequest.current?.abort();
     activeRequest.current = null;
-    stopSpeech();
-    cancelTranscription();
+    stopVoiceConversation();
     setConversationBusy(true);
     setError(null);
     try {
@@ -696,10 +1006,13 @@ function App() {
     }
   };
 
-  const sendMessage = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const content = draft.trim();
-    if (!content || loading) return;
+  const sendMessage = async (
+    event?: FormEvent<HTMLFormElement>,
+    submittedText?: string,
+  ) => {
+    event?.preventDefault();
+    const content = (submittedText ?? draft).trim();
+    if (!content || loading || activeRequest.current !== null) return;
 
     conversationChangedByUser.current = true;
     conversationRequestId.current += 1;
@@ -787,6 +1100,9 @@ function App() {
           ...current.filter((item) => item.id !== savedConversationId),
         ]);
         setMessages([...nextMessages, { role: "assistant", content: result.message }]);
+        if (voiceSettings.auto_play_responses || voiceSessionActiveRef.current) {
+          void generateSpeech(nextMessages.length, result.message, true);
+        }
       }
     } catch (requestError) {
       if (controller.signal.aborted || currentRequestId !== requestId.current) return;
@@ -795,6 +1111,7 @@ function App() {
           ? requestError.message
           : "The chat request failed. Please try again.",
       );
+      if (voiceSessionActiveRef.current) deactivateVoiceSession();
     } finally {
       if (currentRequestId === requestId.current) {
         activeRequest.current = null;
@@ -829,6 +1146,7 @@ function App() {
             state={avatarState}
             onLoaded={handleAvatarLoaded}
             onError={handleAvatarError}
+            getAudioAmplitude={getAudioAmplitude}
           />
           <div className="avatar-status" role="status">
             <span className={`status-dot ${avatarLoaded ? "ready" : ""}`} />
@@ -878,7 +1196,9 @@ function App() {
                       {speech.messageIndex === index && speech.status === "generating" ? (
                         <>
                           <button disabled type="button">Generating audio…</button>
-                          <button onClick={stopSpeech} type="button">Stop audio</button>
+                          {!voiceSessionActive && (
+                            <button onClick={stopSpeech} type="button">Stop audio</button>
+                          )}
                         </>
                       ) : speech.messageIndex === index && audioUrl.current !== null ? (
                         <>
@@ -895,11 +1215,17 @@ function App() {
                               {speech.status === "ready" ? "Play audio" : "Retry playback"}
                             </button>
                           )}
-                          <button onClick={stopSpeech} type="button">Stop audio</button>
+                          {!voiceSessionActive && (
+                            <button onClick={stopSpeech} type="button">Stop audio</button>
+                          )}
                         </>
                       ) : (
                         <button
-                          disabled={speech.status === "generating"}
+                          disabled={
+                            speech.status === "generating" ||
+                            voiceSessionActive ||
+                            message.content.length > MAX_SPOKEN_RESPONSE_CHARACTERS
+                          }
                           onClick={() => void generateSpeech(index, message.content)}
                           type="button"
                         >
@@ -919,6 +1245,12 @@ function App() {
                       {speech.messageIndex === index && speech.status === "error" && (
                         <p className="speech-error" role="alert">{speech.error}</p>
                       )}
+                      {message.content.length > MAX_SPOKEN_RESPONSE_CHARACTERS && (
+                        <p className="speech-error" role="status">
+                          Replies over {MAX_SPOKEN_RESPONSE_CHARACTERS.toLocaleString()} characters
+                          are kept as text and are not sent for speech synthesis.
+                        </p>
+                      )}
                     </div>
                   )}
                 </article>
@@ -929,12 +1261,31 @@ function App() {
           </div>
 
           <div className="recording-controls">
+            {voiceSettings.continuous_conversation_enabled && !voiceSessionActive && (
+              <button
+                disabled={
+                  loading ||
+                  speechInputBusy ||
+                  conversationBusy
+                }
+                onClick={() => void startVoiceConversation()}
+                type="button"
+              >
+                Start voice conversation
+              </button>
+            )}
+            {voiceSessionActive && (
+              <button onClick={stopVoiceConversation} type="button">
+                Stop voice conversation
+              </button>
+            )}
             {transcriptionStatus === "recording" ? (
               <button onClick={stopRecording} type="button">Stop recording</button>
             ) : (
               <button
                 disabled={
                   loading ||
+                  voiceSessionActive ||
                   transcriptionStatus === "requesting" ||
                   transcriptionStatus === "transcribing"
                 }
@@ -954,7 +1305,11 @@ function App() {
               </button>
             )}
             {transcriptionStatus === "recording" && (
-              <p role="status">Recording locally. Stop to transcribe.</p>
+              <p role="status">
+                {voiceSessionActive
+                  ? "Listening locally. Pause to finish the utterance, or stop recording."
+                  : "Recording locally. Stop to transcribe."}
+              </p>
             )}
             {transcriptionStatus === "transcribing" && (
               <p role="status">Transcribing locally…</p>
@@ -963,12 +1318,41 @@ function App() {
               <p role="status">Review or edit the transcription before sending.</p>
             )}
             {transcriptionError && <p role="alert">{transcriptionError}</p>}
+            {(speech.status === "generating" ||
+              speech.status === "playing" ||
+              (voiceSessionActive && speech.status === "paused")) && (
+              <button onClick={interruptAndListen} type="button">
+                Interrupt and listen
+              </button>
+            )}
+            {voiceSessionActive && (
+              <p className="voice-status" role="status">
+                {transcriptionStatus === "requesting"
+                  ? "Requesting microphone permission…"
+                  : transcriptionStatus === "recording"
+                    ? "Listening for your voice."
+                    : transcriptionStatus === "transcribing"
+                      ? "Processing your speech locally…"
+                      : loading
+                        ? "Processing your request locally…"
+                        : speech.status === "generating"
+                          ? "Preparing the spoken response…"
+                          : speech.status === "playing"
+                            ? "Speaking. Use Interrupt and listen to barge in."
+                            : speech.status === "paused"
+                              ? "Speech is paused."
+                              : "Voice conversation is active."}
+              </p>
+            )}
+            {voiceRuntimeError && (
+              <p className="voice-runtime-note" role="status">{voiceRuntimeError}</p>
+            )}
           </div>
           <form className="composer" onSubmit={sendMessage}>
             <label className="sr-only" htmlFor="chat-message">Message</label>
             <textarea
               id="chat-message"
-              disabled={speechInputBusy || conversationBusy}
+              disabled={speechInputBusy || conversationBusy || voiceSessionActive}
               maxLength={4000}
               onChange={(event) => setDraft(event.target.value)}
               placeholder="Write a message…"
@@ -976,7 +1360,13 @@ function App() {
               value={draft}
             />
             <button
-              disabled={loading || speechInputBusy || conversationBusy || !draft.trim()}
+              disabled={
+                loading ||
+                speechInputBusy ||
+                conversationBusy ||
+                voiceSessionActive ||
+                !draft.trim()
+              }
               type="submit"
             >
               {loading ? "Thinking…" : "Send"}
@@ -988,6 +1378,7 @@ function App() {
           </p>
           <div className="memory-settings">
             <PersonalitySettings />
+            <VoiceSettings onSettingsChange={handleVoiceSettingsChange} />
           </div>
           <MemorySettings conversationId={conversationId} />
           <audio
@@ -997,6 +1388,9 @@ function App() {
               setSpeech((current) => current.status === "playing"
                 ? { ...current, status: "ready" }
                 : current);
+              if (voiceSessionActiveRef.current) {
+                void startRecording("continuous");
+              }
             }}
             onError={() => {
               if (audioMessageIndex.current !== null) {
@@ -1006,6 +1400,7 @@ function App() {
                   error: "Could not play the generated audio.",
                 });
               }
+              if (voiceSessionActiveRef.current) deactivateVoiceSession();
             }}
             onPause={() => {
               if (audioRef.current?.ended) return;
