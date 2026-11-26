@@ -17,6 +17,9 @@ memories.
   FTS5 search, editing, deletion, and relevant-memory retrieval.
 - Persistent digital personality settings for name, communication style,
   response length, and custom instructions.
+- Optional local personalization with persistent enable/disable control,
+  recurring broad-topic summaries, explicit recurring-preference suggestions,
+  and user-requested proactive ideas.
 - Follow-up-aware use of bounded recent turns during approved-memory search,
   cautious handling of unknown personal facts, and warnings for a small set of
   clearly conflicting saved attributes.
@@ -143,6 +146,25 @@ user profile and approved memories. Save changes explicitly or reset the
 personality to its defaults. Ordinary chat messages never change these saved
 settings.
 
+Expand **Personalization & optional ideas** to enable or disable use of the
+editable profile and approved memories in chat. The setting is stored locally
+and defaults to enabled to preserve the existing profile and memory behavior.
+Personality settings remain separate and take priority over saved response
+preferences. Disabling personalization stops those profile and memory details
+from being added to chat context and hides derived topic summaries and
+suggestions; it does not delete the profile, approved memories, or pending
+suggestions.
+
+Recurring topics are calculated on demand from at most the 200 most recent
+user messages, with each message limited to 1,200 characters. Only broad,
+allowlisted general-interest categories are summarized; the summary is not
+stored. A conservative keyword filter skips messages with recognized sensitive
+topics, but it is not a general-purpose sensitive-data classifier. **Show
+optional ideas** is user-triggered, returns at most three generic prompts based
+on recurring topics and approved-memory topics, and does not send anything.
+At most the 100 most recently updated approved memories are considered.
+Choose **Use in draft** to edit the prompt before sending, or dismiss it.
+
 If Ollama is stopped or Qwen3 4B is unavailable, the UI shows the backend error
 and keeps the message visible so you can resend it after fixing the local runtime.
 
@@ -208,6 +230,14 @@ Use **Suggest from current conversation** to ask the local Ollama model for
 possible durable memories. Suggestions remain pending and separate from
 approved memories. Review, set importance, then explicitly approve or dismiss
 each suggestion; nothing is saved as a long-term memory without approval.
+
+**Suggest recurring preferences** checks the same bounded local message history
+for repeated, explicit statements in allowlisted general-interest categories
+and a few response-format preferences. It does not infer a preference from
+topic frequency alone or suggest recognized sensitive categories. Candidates
+appear as pending suggestions in the memory panel; approve one explicitly to
+save it, or dismiss it. Approved memories can still be inspected, edited, and
+deleted there. Topic summaries are transient and need no deletion.
 
 Chat prompts ask the local model to distinguish known information from
 uncertainty, avoid guessing personal facts, and request clarification only when
