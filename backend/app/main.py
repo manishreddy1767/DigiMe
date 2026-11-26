@@ -1,9 +1,10 @@
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.services.ollama import OllamaService
+from app.services.speech import get_kokoro_service
 
 app = FastAPI(
     title="Digital Me",
@@ -39,6 +40,17 @@ class ChatResponse(BaseModel):
     message: str
 
 
+class TTSRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=4_000)
+
+    @field_validator("text")
+    @classmethod
+    def text_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Text must not be blank.")
+        return value
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -53,3 +65,17 @@ def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
     return ChatResponse(message=response)
+
+
+@app.post("/api/tts")
+def text_to_speech(request: TTSRequest) -> Response:
+    try:
+        audio = get_kokoro_service().synthesize_to_wav(request.text)
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+    return Response(
+        content=audio,
+        media_type="audio/wav",
+        headers={"Cache-Control": "no-store"},
+    )
