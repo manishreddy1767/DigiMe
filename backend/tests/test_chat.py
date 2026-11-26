@@ -73,6 +73,8 @@ def test_personality_has_a_separate_persistent_system_prompt_section() -> None:
     assert "polished, respectful, and direct" in system_message
     assert "brief answers" in system_message
     assert "Custom instructions: Use plain language." in system_message
+    assert "within the configured personality" in system_message
+    assert "do not override personality settings" in system_message
     assert "User profile and approved memories (separate from personality):" in system_message
     assert "User profile: Alex" in system_message
     assert bounded[-1] == messages[0]
@@ -150,6 +152,9 @@ def test_ollama_memory_suggestions_are_local_json_and_bounded() -> None:
     request_body = json.loads(request.data)
     assert request.full_url == "http://127.0.0.1:11434/api/chat"
     assert request_body["format"] == "json"
+    assert "Do not infer or propose sensitive personal attributes" in request_body[
+        "messages"
+    ][0]["content"]
     assert suggestions == ["I enjoy hiking.", "I prefer concise replies."]
 
 

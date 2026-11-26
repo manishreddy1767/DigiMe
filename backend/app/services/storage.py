@@ -19,6 +19,8 @@ _MEMORY_SEARCH_STOP_WORDS = frozenset(
     }
 )
 _MIN_MEMORY_SEMANTIC_SIMILARITY = 0.35
+MAX_PERSONALIZATION_MESSAGES = 200
+MAX_PERSONALIZATION_MEMORIES = 100
 DEFAULT_PERSONALITY = {
     "name": "Digital Me",
     "communication_style": "friendly",
@@ -29,8 +31,6 @@ DEFAULT_VOICE_SETTINGS = {
     "auto_play_responses": False,
     "continuous_conversation_enabled": False,
 }
-
-
 class RecordNotFoundError(Exception):
     pass
 
@@ -122,6 +122,14 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
                 INSERT OR IGNORE INTO voice_settings (id, updated_at)
+                    VALUES (1, '');
+                CREATE TABLE IF NOT EXISTS personalization_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    enabled INTEGER NOT NULL DEFAULT 1
+                        CHECK (enabled IN (0, 1)),
+                    updated_at TEXT NOT NULL
+                );
+                INSERT OR IGNORE INTO personalization_settings (id, updated_at)
                     VALUES (1, '');
                 CREATE TABLE IF NOT EXISTS memories (
                     id TEXT PRIMARY KEY,
@@ -367,6 +375,56 @@ class Database:
                 (int(auto_play_responses), int(continuous_conversation_enabled), now),
             )
         return self.get_voice_settings()
+
+    def get_personalization_settings(self) -> dict[str, object]:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT enabled, updated_at FROM personalization_settings WHERE id = 1"
+            ).fetchone()
+        return {
+            "enabled": bool(row["enabled"]),
+            "updated_at": row["updated_at"],
+        }
+
+    def update_personalization_settings(self, enabled: bool) -> dict[str, object]:
+        now = self._now()
+        with self._connection() as connection:
+            connection.execute(
+                """
+                UPDATE personalization_settings
+                SET enabled = ?, updated_at = ?
+                WHERE id = 1
+                """,
+                (int(enabled), now),
+            )
+        return self.get_personalization_settings()
+
+    def get_recent_user_messages(self) -> list[dict[str, str]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT 'user' AS role, conversation_id,
+                       substr(content, 1, 1200) AS content
+                FROM messages
+                WHERE role = 'user'
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (MAX_PERSONALIZATION_MESSAGES,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_recent_memories_for_personalization(self) -> list[dict[str, object]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM memories
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                (MAX_PERSONALIZATION_MEMORIES,),
+            ).fetchall()
+        return [self._memory_dict(row) for row in rows]
 
     def create_memory(
         self,
@@ -753,6 +811,10 @@ class Database:
 
     def delete_memory(self, memory_id: str) -> bool:
         with self._connection() as connection:
+            connection.execute(
+                "DELETE FROM memory_suggestions WHERE memory_id = ?",
+                (memory_id,),
+            )
             cursor = connection.execute(
                 "DELETE FROM memories WHERE id = ?", (memory_id,)
             )

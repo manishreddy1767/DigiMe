@@ -12,6 +12,11 @@ from app.services.chat_context import (
 )
 from app.services.embeddings import EMBEDDING_MODEL, try_embed_text
 from app.services.ollama import OllamaService
+from app.services.personalization import (
+    build_proactive_suggestions,
+    find_recurring_preference_suggestions,
+    summarize_recurring_topics,
+)
 from app.services.speech import get_kokoro_service, get_whisper_service
 from app.services.storage import (
     DEFAULT_PERSONALITY,
@@ -93,6 +98,10 @@ class PersonalityUpdate(BaseModel):
 class VoiceSettingsUpdate(BaseModel):
     auto_play_responses: bool
     continuous_conversation_enabled: bool
+
+
+class PersonalizationSettingsUpdate(BaseModel):
+    enabled: bool
 
 
 class MemoryRequest(BaseModel):
@@ -206,6 +215,40 @@ def update_voice_settings(settings: VoiceSettingsUpdate) -> dict[str, object]:
     )
 
 
+@app.get("/api/personalization/settings")
+def get_personalization_settings() -> dict[str, object]:
+    return Database().get_personalization_settings()
+
+
+@app.put("/api/personalization/settings")
+def update_personalization_settings(
+    settings: PersonalizationSettingsUpdate,
+) -> dict[str, object]:
+    return Database().update_personalization_settings(settings.enabled)
+
+
+@app.get("/api/personalization/topics")
+def get_recurring_topics() -> list[dict[str, object]]:
+    database = Database()
+    if not database.get_personalization_settings()["enabled"]:
+        return []
+    return summarize_recurring_topics(database.get_recent_user_messages())
+
+
+@app.get("/api/personalization/proactive-suggestions")
+def get_proactive_suggestions() -> list[dict[str, str]]:
+    database = Database()
+    if not database.get_personalization_settings()["enabled"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Enable personalization to request suggestions.",
+        )
+    return build_proactive_suggestions(
+        database.get_recent_user_messages(),
+        database.get_recent_memories_for_personalization(),
+    )
+
+
 @app.get("/api/memories")
 def list_memories(
     query: str | None = Query(default=None, alias="q", max_length=500),
@@ -308,6 +351,22 @@ def suggest_memories(conversation_id: str) -> list[dict[str, str]]:
     return database.create_memory_suggestions(conversation_id, suggestions)
 
 
+@app.post("/api/conversations/{conversation_id}/preference-suggestions")
+def suggest_recurring_preferences(conversation_id: str) -> list[dict[str, str]]:
+    database = Database()
+    if not database.get_personalization_settings()["enabled"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Enable personalization to suggest recurring preferences.",
+        )
+    if database.get_conversation(conversation_id) is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    suggestions = find_recurring_preference_suggestions(
+        database.get_recent_user_messages()
+    )
+    return database.create_memory_suggestions(conversation_id, suggestions)
+
+
 @app.post("/api/memory-suggestions/{suggestion_id}/approve", status_code=201)
 def approve_memory_suggestion(
     suggestion_id: str,
@@ -380,29 +439,33 @@ def chat(request: ChatRequest) -> ChatResponse:
         {"role": message["role"], "content": message["content"]}
         for message in conversation["messages"]
     ]
-    profile = database.get_profile()
     context_sections = []
-    profile_fields = [
-        ("Name", profile["name"]),
-        ("About", profile["about"]),
-        ("Preferences", profile["preferences"]),
-    ]
-    filled_profile = [f"{label}: {value}" for label, value in profile_fields if value]
-    if filled_profile:
-        context_sections.append(
-            "Editable user profile (provided by the user):\n"
-            + "\n".join(filled_profile)
-        )
+    personalization_enabled = bool(database.get_personalization_settings()["enabled"])
+    if personalization_enabled:
+        profile = database.get_profile()
+        profile_fields = [
+            ("Name", profile["name"]),
+            ("About", profile["about"]),
+            ("Preferences", profile["preferences"]),
+        ]
+        filled_profile = [f"{label}: {value}" for label, value in profile_fields if value]
+        if filled_profile:
+            context_sections.append(
+                "Editable user profile (provided by the user):\n"
+                + "\n".join(filled_profile)
+            )
 
-    memories = database.list_memories()
-    if memories:
-        memory_query = build_memory_search_query(messages)
-        query_embedding, _ = try_embed_text(memory_query)
-        relevant_memories = database.search_memories_hybrid(
-            memory_query,
-            query_embedding,
-            EMBEDDING_MODEL,
-        )
+        memories = database.list_memories()
+        if memories:
+            memory_query = build_memory_search_query(messages)
+            query_embedding, _ = try_embed_text(memory_query)
+            relevant_memories = database.search_memories_hybrid(
+                memory_query,
+                query_embedding,
+                EMBEDDING_MODEL,
+            )
+        else:
+            relevant_memories = []
     else:
         relevant_memories = []
     conflicting_memory_ids = find_conflicting_memory_ids(relevant_memories)
