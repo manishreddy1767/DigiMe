@@ -1,7 +1,5 @@
 export type AvatarAnimationState = "idle" | "happy" | "thinking" | "speaking";
 
-export const SPEAKING_DISPLAY_DURATION_MS = 1_200;
-
 export interface AvatarAnimationFrame {
   expressionWeights: {
     neutral: number;

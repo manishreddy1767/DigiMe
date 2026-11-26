@@ -214,6 +214,50 @@ h2 {
   white-space: pre-wrap;
 }
 
+.speech-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.speech-controls button {
+  padding: 7px 10px;
+  border: 1px solid #40516a;
+  border-radius: 8px;
+  color: #dce8fb;
+  background: #182232;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.speech-controls button:not(:disabled):hover {
+  border-color: #8eb3f4;
+  background: #253750;
+}
+
+.speech-controls button:disabled {
+  color: #909aae;
+  cursor: wait;
+}
+
+.speech-controls .speech-status,
+.speech-controls .speech-error {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 0.78rem;
+  white-space: normal;
+}
+
+.speech-controls .speech-status {
+  color: #9aa8bd;
+}
+
+.speech-controls .speech-error {
+  color: #ffc5cb;
+}
+
 .thinking {
   color: #a9c8ff;
   font-size: 0.9rem;
