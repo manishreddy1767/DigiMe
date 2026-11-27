@@ -15,7 +15,7 @@ from app.services.chat_context import (
     format_approved_memory_context,
 )
 from app.services.embeddings import EMBEDDING_MODEL, try_embed_text
-from app.services.ollama import OllamaService
+from app.services.ollama import MODEL, REASONING_MODEL, OllamaService
 from app.services.personalization import (
     build_proactive_suggestions,
     find_recurring_preference_suggestions,
@@ -191,6 +191,21 @@ def _current_local_time() -> str:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/status")
+def get_status() -> dict[str, object]:
+    personality = Database().get_personality()
+    deep_reasoning = bool(personality["deep_reasoning"])
+    model = REASONING_MODEL if deep_reasoning else MODEL
+    installed = OllamaService().installed_models()
+    return {
+        "assistant_name": personality["name"],
+        "model": model,
+        "deep_reasoning": deep_reasoning,
+        "ollama_reachable": installed is not None,
+        "model_available": installed is not None and model in installed,
+    }
 
 
 @app.get("/api/conversations")

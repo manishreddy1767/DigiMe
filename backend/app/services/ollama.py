@@ -70,6 +70,23 @@ class GenerationResult:
 
 
 class OllamaService:
+    def installed_models(self) -> set[str] | None:
+        """Return the locally installed model names, or None when Ollama is unreachable."""
+        request = Request(f"{OLLAMA_URL}/api/tags", method="GET")
+        try:
+            with urlopen(request, timeout=3) as response:
+                payload = json.load(response)
+        except (URLError, TimeoutError, OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        models = payload.get("models") if isinstance(payload, dict) else None
+        if not isinstance(models, list):
+            return set()
+        return {
+            model["name"]
+            for model in models
+            if isinstance(model, dict) and isinstance(model.get("name"), str)
+        }
+
     def generate_check_response(self) -> GenerationResult:
         request_body = {
             "model": MODEL,
