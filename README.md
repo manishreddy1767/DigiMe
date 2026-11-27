@@ -45,8 +45,13 @@ memories.
 - The speaking expression follows audio playback; mouth openness responds to
   audio amplitude when Web Audio analysis is available. This is not
   phoneme-level lip synchronization.
-- No cloud APIs, background listening, wake-word detection, voice cloning,
-  automatic memory extraction, or remote database.
+- Optional, fully local personalisation of how it looks and sounds: an avatar
+  rendered from your own photo (LivePortrait) and replies in your own voice,
+  learnt from your recordings (OpenVoice V2, watermarked). The 3D avatar and
+  the built-in voices stay the defaults. Use only your own photo and voice; the
+  app cannot check whose they are.
+- No cloud APIs, background listening, wake-word detection, automatic memory
+  extraction, or remote database.
 
 ## Prerequisites
 
@@ -216,10 +221,11 @@ requested only after you start recording. Recordings are held in memory,
 limited to 20 MB, and are not written to disk. The app does not listen in the
 background.
 
-Expand **Voice settings** to choose one of seven English Kokoro voices (Heart,
-Bella, Nicole, Sarah, Michael, Fenrir or Puck) and to enable automatic playback
-and continuous voice conversation. Save settings explicitly; the chosen voice is
-used for every reply spoken afterwards. Enabling continuous mode only makes the
+Open **Context → Your voice** to choose one of seven English Kokoro voices
+(Heart, Bella, Nicole, Sarah, Michael, Fenrir or Puck) and play a preview; the
+choice is saved at once and used for every reply spoken afterwards. The voice
+settings button in the top bar enables automatic playback and continuous voice
+conversation; save those explicitly. Enabling continuous mode only makes the
 mode available; use **Start voice conversation** to activate the microphone for
 that session. The app does not resume listening after a restart. In this mode,
 recording stops after approximately 0.9 seconds of detected silence following
@@ -281,6 +287,47 @@ or favorite-value statements when they are retrieved; it does not determine
 which statement is current. These are prompt and retrieval safeguards, not
 calibrated confidence scores or guarantees against model errors. Other kinds
 of contradictions may not be detected.
+
+## Your own avatar and your own voice (optional)
+
+Both run their GPU models in a separate Python environment under `models\` (git
+ignored), installed once from the repository root:
+
+```powershell
+.\scripts\setup-avatar.ps1   # LivePortrait, about 3.6 GB
+.\scripts\setup-voice.ps1    # OpenVoice V2 and wavmark, about 200 MB more
+```
+
+The scripts need `git` and `uv`. If these models are already installed elsewhere,
+set `DIGITAL_ME_MODELS_DIR` to that `models` folder, or link it, instead of
+installing them again. Restart the backend afterwards.
+
+**Your avatar.** The 3D avatar is the default. In **Context → Your avatar**,
+choose **Add your photo**: one clear photo facing the camera, in good light, with
+your face fairly large in the frame. The photo is re-saved without its metadata
+(camera details, GPS location, dates). LivePortrait then renders 72 face poses
+from it once (6 mouth shapes × open, half-closed and closed eyes × neutral,
+happy, surprised and concerned), which takes about a minute on a 4 GB laptop GPU;
+the language model is unloaded first to make room and loads again on the next
+message. While you talk, the browser only switches between these pictures, so
+animating costs no GPU time. The mouth follows the loudness of the voice, not
+the actual sounds. Use the bin icon to go back to the default avatar. LivePortrait
+is MIT licensed; its InsightFace face-detection models are for non-commercial use
+only, which fits a personal project.
+
+**Your voice.** In **Context → Your voice**, read the lines shown with **Record
+this line**, or upload recordings from your phone (WAV, MP3, M4A, OGG, WebM or
+FLAC). After 10 seconds of speech you can switch on **Speak in my voice** and use
+**Hear my voice** to check it; about a minute of recordings gives a closer match.
+Replies are still spoken by the chosen Kokoro voice, then OpenVoice V2 converts
+the sound into your voice on the GPU; the rhythm and accent come from the
+built-in voice. If the conversion fails, the built-in voice is used. Every reply
+spoken in your voice carries an inaudible wavmark watermark marking it as
+AI-made. Only record your own voice. OpenVoice V2 and wavmark are MIT licensed.
+
+Photos, recordings, the learnt voiceprint and the rendered poses are stored next
+to the local database (by default `%LOCALAPPDATA%\DigitalMe\avatar` and
+`...\voice`), never in the repository, and are processed only on this computer.
 
 ## Tests
 
