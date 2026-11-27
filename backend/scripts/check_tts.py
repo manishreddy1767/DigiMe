@@ -6,7 +6,7 @@ from app.services.speech import KokoroService
 def main() -> None:
     output_dir = Path("artifacts/feasibility")
     service = KokoroService()
-    print("Runtime: Kokoro on CPU")
+    print(f"Runtime: Kokoro on {service.device.upper()}")
     print(f"Model load: {service.load_seconds:.2f}s")
 
     for filename, text in (

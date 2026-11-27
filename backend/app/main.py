@@ -1,4 +1,7 @@
-from typing import Literal
+import logging
+from contextlib import asynccontextmanager
+from threading import Thread
+from typing import AsyncIterator, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
@@ -23,8 +26,35 @@ from app.services.storage import (
     Database,
 )
 
+logger = logging.getLogger(__name__)
+
+
+def _warm_kokoro_service() -> None:
+    try:
+        service = get_kokoro_service()
+        service.warm_up()
+    except RuntimeError as error:
+        logger.warning(
+            "Local Kokoro warm-up failed; TTS may be slower or unavailable: %s",
+            error,
+        )
+    else:
+        logger.info("Local Kokoro TTS warmed on %s.", service.device)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    Thread(
+        target=_warm_kokoro_service,
+        name="kokoro-warmup",
+        daemon=True,
+    ).start()
+    yield
+
+
 app = FastAPI(
     title="Digital Me",
+    lifespan=lifespan,
     docs_url=None,
     redoc_url=None,
     openapi_url=None,

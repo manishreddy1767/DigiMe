@@ -1,12 +1,38 @@
 import wave
 from io import BytesIO
 from pathlib import Path
+from sys import modules
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 
-from app.main import app
-from app.services.speech import KokoroService, SAMPLE_RATE
+from app.main import _warm_kokoro_service, app
+from app.services.speech import (
+    KOKORO_GPU_MIN_FREE_BYTES,
+    KOKORO_MODEL_REPO_ID,
+    KokoroService,
+    SAMPLE_RATE,
+)
+
+
+def fake_tts_modules(
+    pipeline_factory: Mock,
+    cuda_available: bool = True,
+    free_bytes: int = 2 * 1024**3,
+) -> tuple[ModuleType, ModuleType, type[RuntimeError]]:
+    torch_module = ModuleType("torch")
+    torch_module.set_num_threads = Mock()
+    out_of_memory_error = type("CudaOutOfMemoryError", (RuntimeError,), {})
+    torch_module.cuda = SimpleNamespace(
+        is_available=Mock(return_value=cuda_available),
+        mem_get_info=Mock(return_value=(free_bytes, 6 * 1024**3)),
+        empty_cache=Mock(),
+        OutOfMemoryError=out_of_memory_error,
+    )
+    kokoro_module = ModuleType("kokoro")
+    kokoro_module.KPipeline = pipeline_factory
+    return torch_module, kokoro_module, out_of_memory_error
 
 
 def test_tts_endpoint_returns_mocked_local_wav() -> None:
@@ -72,3 +98,111 @@ def test_feasibility_service_still_writes_audio_files(tmp_path: Path) -> None:
 
     assert output_path.read_bytes().startswith(b"RIFF")
     assert round(duration, 2) == 0.01
+
+
+def test_kokoro_prefers_cuda_when_enough_memory_is_available() -> None:
+    pipeline_factory = Mock(return_value=object())
+    torch_module, kokoro_module, _ = fake_tts_modules(pipeline_factory)
+
+    with patch.dict(modules, {"torch": torch_module, "kokoro": kokoro_module}):
+        service = KokoroService()
+
+    assert service.device == "cuda"
+    pipeline_factory.assert_called_once_with(
+        lang_code="a",
+        repo_id=KOKORO_MODEL_REPO_ID,
+        device="cuda",
+    )
+
+
+def test_kokoro_uses_cpu_when_gpu_memory_is_low() -> None:
+    pipeline_factory = Mock(return_value=object())
+    torch_module, kokoro_module, _ = fake_tts_modules(
+        pipeline_factory,
+        free_bytes=KOKORO_GPU_MIN_FREE_BYTES - 1,
+    )
+
+    with patch.dict(modules, {"torch": torch_module, "kokoro": kokoro_module}):
+        service = KokoroService()
+
+    assert service.device == "cpu"
+    pipeline_factory.assert_called_once_with(
+        lang_code="a",
+        repo_id=KOKORO_MODEL_REPO_ID,
+        device="cpu",
+    )
+
+
+def test_kokoro_uses_cpu_when_cuda_is_unavailable() -> None:
+    pipeline_factory = Mock(return_value=object())
+    torch_module, kokoro_module, _ = fake_tts_modules(
+        pipeline_factory,
+        cuda_available=False,
+    )
+
+    with patch.dict(modules, {"torch": torch_module, "kokoro": kokoro_module}):
+        service = KokoroService()
+
+    assert service.device == "cpu"
+    pipeline_factory.assert_called_once_with(
+        lang_code="a",
+        repo_id=KOKORO_MODEL_REPO_ID,
+        device="cpu",
+    )
+
+
+def test_kokoro_falls_back_to_cpu_when_gpu_initialization_fails() -> None:
+    pipeline_factory = Mock(side_effect=[RuntimeError("CUDA initialization failed"), object()])
+    torch_module, kokoro_module, _ = fake_tts_modules(pipeline_factory)
+
+    with patch.dict(modules, {"torch": torch_module, "kokoro": kokoro_module}):
+        service = KokoroService()
+
+    assert service.device == "cpu"
+    assert [call.kwargs["device"] for call in pipeline_factory.call_args_list] == [
+        "cuda",
+        "cpu",
+    ]
+
+
+def test_kokoro_falls_back_to_cpu_after_gpu_out_of_memory() -> None:
+    pipeline_factory = Mock(side_effect=[object(), object()])
+    torch_module, kokoro_module, out_of_memory_error = fake_tts_modules(pipeline_factory)
+
+    with patch.dict(modules, {"torch": torch_module, "kokoro": kokoro_module}):
+        service = KokoroService()
+        with patch.object(
+            service,
+            "_synthesize_to_wav",
+            side_effect=[out_of_memory_error("CUDA out of memory"), b"cpu-audio"],
+        ):
+            audio = service.synthesize_to_wav("Hello there.")
+
+    assert audio == b"cpu-audio"
+    assert service.device == "cpu"
+    assert [call.kwargs["device"] for call in pipeline_factory.call_args_list] == [
+        "cuda",
+        "cpu",
+    ]
+    torch_module.cuda.empty_cache.assert_called_once()
+
+
+def test_backend_warmup_initializes_kokoro_service(caplog) -> None:
+    service = Mock(device="cuda")
+    caplog.set_level("INFO")
+
+    with patch("app.main.get_kokoro_service", return_value=service):
+        _warm_kokoro_service()
+
+    service.warm_up.assert_called_once()
+    assert "warmed on cuda" in caplog.text
+
+
+def test_backend_warmup_logs_model_failure_without_raising(caplog) -> None:
+    with patch(
+        "app.main.get_kokoro_service",
+        side_effect=RuntimeError("Kokoro model unavailable."),
+    ):
+        _warm_kokoro_service()
+
+    assert "Kokoro warm-up failed" in caplog.text
