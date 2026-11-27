@@ -29,8 +29,10 @@ memories.
 - Conservative, deterministic response-text cues select happy, sad, or curious
   expressions; ambiguous or ordinary replies stay neutral. Chat loading uses a
   thinking expression.
-- On-demand Kokoro text-to-speech runs locally on the CPU. Audio is held
-  temporarily in browser memory and is not saved by the backend.
+- Kokoro text-to-speech uses the local NVIDIA GPU when available, with a CPU
+  fallback when CUDA is unavailable, GPU memory is low, or GPU synthesis runs
+  out of memory. Audio is held temporarily in browser memory and is not saved
+  by the backend.
 - Push-to-talk speech recognition uses faster-whisper `base` on CPU with int8.
   Transcripts appear in the editable message input before they are sent.
 - Optional automatic speech playback and explicitly started continuous voice
@@ -101,11 +103,18 @@ search and chat retrieval continue with SQLite FTS5.
 
 Ollama model downloads happen locally. Chat requests go only to Ollama at
 `127.0.0.1:11434`; the backend and Vite development server bind to loopback.
-Kokoro inference and faster-whisper transcription run locally on the CPU. On
-first use, Kokoro and faster-whisper may download model and voice weights into
-the local Hugging Face cache. Only model weights are fetched from model
-hosting; conversation text and microphone recordings are processed by local
-services and are not uploaded. Later processing uses the cached weights.
+Kokoro inference runs locally on the RTX GPU when CUDA is available and at
+least 1.5 GiB is free; otherwise it falls back to CPU. The backend warms Kokoro
+in the background at startup so the first spoken response can use the warmed
+model. The first startup can take longer while the local TTS model loads and
+warms; typed chat remains available meanwhile. faster-whisper transcription
+remains on the CPU with int8. On first startup/use, Kokoro and faster-whisper
+may download model and voice weights into the local Hugging Face cache. Only
+model weights are fetched from model hosting; conversation text and microphone
+recordings are processed by local services and are not uploaded. Later
+processing uses the cached weights.
+Kokoro and Ollama share GPU memory, so Kokoro automatically uses the CPU when
+available GPU memory is below the threshold or CUDA runs out of memory.
 
 Conversation history, the editable profile, and approved memories are stored
 in a local SQLite database outside the source repository. By default, the file
