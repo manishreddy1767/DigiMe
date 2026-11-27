@@ -1,10 +1,26 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowUp,
+  AudioLines,
+  Brain,
+  Ear,
+  MessagesSquare,
+  Mic,
+  Pause,
+  Play,
+  Sparkles,
+  Square,
+  Trash2,
+  Volume2,
+} from "lucide-react";
 import AvatarView from "./avatar/AvatarView";
 import {
   inferAvatarEmotion,
   type AvatarAnimationState,
   type AvatarEmotion,
 } from "./avatar/avatarAnimation";
+import Drawer from "./components/Drawer";
+import TopBar, { type AppStatus } from "./components/TopBar";
 import MemorySettings from "./MemorySettings";
 import MessageContent from "./MessageContent";
 import PersonalizationSettings from "./PersonalizationSettings";
@@ -63,6 +79,38 @@ const MAX_SPOKEN_RESPONSE_CHARACTERS = 4_000;
 const VOICE_SILENCE_THRESHOLD = 0.018;
 const VOICE_SILENCE_DURATION_MS = 900;
 const MIN_VOICE_DURATION_MS = 350;
+const STATUS_REFRESH_MS = 30_000;
+
+const SUGGESTIONS = [
+  "What do you know about me?",
+  "Help me plan my week.",
+  "Explain something I am learning, simply.",
+];
+
+const STAGE_HUES: Record<AvatarEmotion, string> = {
+  neutral: "#8ea2c8",
+  happy: "#f2c27b",
+  sad: "#7fa7d9",
+  curious: "#b89cff",
+};
+
+type StageState = "idle" | "listening" | "thinking" | "speaking";
+
+const STAGE_LABELS: Record<StageState, string> = {
+  idle: "Ready",
+  listening: "Listening",
+  thinking: "Thinking",
+  speaking: "Speaking",
+};
+
+const STAGE_ICONS = {
+  idle: Sparkles,
+  listening: Ear,
+  thinking: Brain,
+  speaking: Volume2,
+} as const;
+
+type DrawerName = "history" | "voice" | "context";
 
 function stopStream(stream: MediaStream | null) {
   stream?.getTracks().forEach((track) => track.stop());
@@ -82,6 +130,11 @@ function App() {
   const [speech, setSpeech] = useState<SpeechState>(IDLE_SPEECH_STATE);
   const [voiceSettings, setVoiceSettings] = useState(DEFAULT_VOICE_SETTINGS);
   const [assistantName, setAssistantName] = useState("Digital Me");
+  const [drawer, setDrawer] = useState<DrawerName | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  const [voiceSettingsKey, setVoiceSettingsKey] = useState(0);
+  const [appStatus, setAppStatus] = useState<AppStatus | null>(null);
+  const [statusUnreachable, setStatusUnreachable] = useState(false);
   const [personalizationEnabled, setPersonalizationEnabled] = useState(true);
   const [voiceSessionActive, setVoiceSessionActive] = useState(false);
   const [voiceRuntimeError, setVoiceRuntimeError] = useState<string | null>(null);
@@ -129,6 +182,14 @@ function App() {
       : displayedAvatarEmotion === "neutral"
         ? "idle"
         : displayedAvatarEmotion;
+  const stageState: StageState = transcriptionStatus === "recording"
+    ? "listening"
+    : loading
+      ? "thinking"
+      : speech.status === "playing"
+        ? "speaking"
+        : "idle";
+  const StageIcon = STAGE_ICONS[stageState];
   const speechInputBusy = ["requesting", "recording", "transcribing"].includes(
     transcriptionStatus,
   );
@@ -288,7 +349,51 @@ function App() {
 
   const usePersonalizationPrompt = useCallback((prompt: string) => {
     setDraft(prompt);
+    setDrawer(null);
   }, []);
+
+  const closeDrawer = useCallback(() => {
+    setDrawer(null);
+    setConfirmingDelete(null);
+  }, []);
+
+  const refreshStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/status");
+      if (!response.ok) throw new Error(`Status request failed (${response.status}).`);
+      const result: unknown = await response.json();
+      if (
+        typeof result !== "object" ||
+        result === null ||
+        !("model" in result) ||
+        typeof result.model !== "string" ||
+        !("ollama_reachable" in result) ||
+        !("model_available" in result)
+      ) {
+        throw new Error("The status service returned an invalid response.");
+      }
+      setAppStatus(result as AppStatus);
+      setStatusUnreachable(false);
+    } catch {
+      setAppStatus(null);
+      setStatusUnreachable(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshStatus();
+    const timer = window.setInterval(() => void refreshStatus(), STATUS_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [refreshStatus]);
+
+  const handleAssistantNameChange = useCallback((name: string) => {
+    setAssistantName(name);
+    void refreshStatus();
+  }, [refreshStatus]);
+
+  useEffect(() => {
+    document.title = `${assistantName} · Digital Me`;
+  }, [assistantName]);
 
   const getAudioAmplitude = useCallback((): number | null => {
     const analyser = audioAnalyserRef.current;
@@ -1034,6 +1139,56 @@ function App() {
     }
   };
 
+  const deleteConversation = async (targetId: string) => {
+    if (targetId === conversationId) {
+      await deleteCurrentConversation();
+      return;
+    }
+    setError(null);
+    try {
+      const response = await fetch(
+        `/api/conversations/${encodeURIComponent(targetId)}`,
+        { method: "DELETE" },
+      );
+      if (!response.ok) {
+        throw new Error(`Could not delete the conversation (${response.status}).`);
+      }
+      setConversations((current) =>
+        current.filter((conversation) => conversation.id !== targetId),
+      );
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : "Could not delete the local conversation.",
+      );
+    }
+  };
+
+  const toggleSpokenReplies = async () => {
+    const enabled = !voiceSettings.auto_play_responses;
+    try {
+      const response = await fetch("/api/voice-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          auto_play_responses: enabled,
+          continuous_conversation_enabled: voiceSettings.continuous_conversation_enabled,
+          voice: voiceSettings.voice,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`Could not save voice settings (${response.status}).`);
+      }
+      setVoiceSettings((current) => ({ ...current, auto_play_responses: enabled }));
+      setVoiceSettingsKey((key) => key + 1);
+    } catch (toggleError) {
+      setError(
+        toggleError instanceof Error ? toggleError.message : "Could not save voice settings.",
+      );
+    }
+  };
+
   const sendMessage = async (
     event?: FormEvent<HTMLFormElement>,
     submittedText?: string,
@@ -1149,34 +1304,44 @@ function App() {
   };
 
   return (
-    <main className="shell">
-      <header className="header">
-        <div>
-          <p className="eyebrow">LOCAL DIGITAL HUMAN</p>
-          <h1>Digital Me</h1>
-        </div>
-        <div className="header-actions">
-          <span className="privacy-badge">Local-only</span>
-          <button
-            className="new-conversation"
-            disabled={conversationBusy}
-            onClick={() => void startNewConversation()}
-            type="button"
-          >
-            {conversationBusy ? "Loading…" : "New conversation"}
-          </button>
-        </div>
-      </header>
+    <div className="app">
+      <TopBar
+        name={assistantName}
+        newConversationDisabled={conversationBusy}
+        onNewConversation={() => void startNewConversation()}
+        onOpenContext={() => setDrawer("context")}
+        onOpenHistory={() => setDrawer("history")}
+        onOpenVoice={() => setDrawer("voice")}
+        onToggleSpokenReplies={() => void toggleSpokenReplies()}
+        serverUnreachable={statusUnreachable}
+        spokenReplies={voiceSettings.auto_play_responses}
+        status={appStatus}
+      />
 
-      <section className="workspace" aria-label="Digital Me chat">
-        <div className="avatar-panel">
-          <AvatarView
-            state={avatarState}
-            emotion={displayedAvatarEmotion}
-            onLoaded={handleAvatarLoaded}
-            onError={handleAvatarError}
-            getAudioAmplitude={getAudioAmplitude}
-          />
+      <main className="layout">
+        <section
+          aria-label="Digital human"
+          className="stage"
+          style={{ ["--stage-hue" as string]: STAGE_HUES[displayedAvatarEmotion] }}
+        >
+          <div aria-hidden="true" className="stage__light" />
+          <div aria-hidden="true" className="stage__floor" />
+          <div className="stage__status">
+            <div className={`status-pill status-pill--${stageState}`}>
+              <span aria-hidden="true" className="status-pill__dot" />
+              <StageIcon aria-hidden="true" size={14} />
+              <span>{STAGE_LABELS[stageState]}</span>
+            </div>
+          </div>
+          <div className="stage__avatar">
+            <AvatarView
+              state={avatarState}
+              emotion={displayedAvatarEmotion}
+              onLoaded={handleAvatarLoaded}
+              onError={handleAvatarError}
+              getAudioAmplitude={getAudioAmplitude}
+            />
+          </div>
           <div className="avatar-status" role="status">
             <span className={`status-dot ${avatarLoaded ? "ready" : ""}`} />
             {avatarError ??
@@ -1186,75 +1351,100 @@ function App() {
                   : "Procedural avatar ready"
                 : "Loading avatar…")}
           </div>
-        </div>
+        </section>
 
-        <section className="chat-panel" aria-label="Conversation">
-          <div className="conversation-controls">
-            <label htmlFor="saved-conversations">Conversation history</label>
-            <select
-              disabled={conversationBusy}
-              id="saved-conversations"
-              onChange={(event) => void selectConversation(event.target.value)}
-              value={conversationId ?? ""}
-            >
-              <option value="">Current draft</option>
-              {conversations.map((conversation) => (
-                <option key={conversation.id} value={conversation.id}>
-                  {conversation.title}
-                </option>
-              ))}
-            </select>
-            <button
-              className="danger-button"
-              disabled={conversationBusy || !conversationId}
-              onClick={() => void deleteCurrentConversation()}
-              type="button"
-            >
-              Delete conversation
-            </button>
-          </div>
-          <div className="messages" role="log" aria-live="polite" aria-relevant="additions">
+        <section
+          aria-label="Conversation"
+          className="chat"
+          data-conversation-id={conversationId ?? ""}
+        >
+          <div className="chat__list messages" role="log" aria-live="polite" aria-relevant="additions">
             {messages.length === 0 && conversationBusy ? (
               <p className="empty-state" role="status">Loading local conversation…</p>
             ) : messages.length === 0 ? (
-              <p className="empty-state">Send a message to start a conversation.</p>
+              <div className="chat__empty">
+                <p className="chat__empty-title">Start a conversation with {assistantName}</p>
+                <p className="chat__empty-hint empty-state">
+                  Send a message to start a conversation.
+                </p>
+                <div className="chips">
+                  {SUGGESTIONS.map((suggestion) => (
+                    <button
+                      className="chip"
+                      disabled={loading || conversationBusy || voiceSessionActive}
+                      key={suggestion}
+                      onClick={() => void sendMessage(undefined, suggestion)}
+                      type="button"
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+              </div>
             ) : (
               messages.map((message, index) => (
                 <article className={`message ${message.role}`} key={`${index}-${message.role}`}>
-                  <span className="message-author">
+                  <span className="sr-only">
                     {message.role === "user" ? "You" : assistantName}
                   </span>
-                  <MessageContent content={message.content} role={message.role} />
+                  <div className="message__bubble">
+                    <MessageContent content={message.content} role={message.role} />
+                  </div>
                   {message.role === "assistant" && (
                     <div className="speech-controls">
                       {speech.messageIndex === index && speech.status === "generating" ? (
                         <>
-                          <button disabled type="button">Generating audio…</button>
+                          <button className="speech-button" disabled type="button">
+                            <AudioLines aria-hidden="true" size={14} />
+                            Generating audio…
+                          </button>
                           {!voiceSessionActive && (
-                            <button onClick={stopSpeech} type="button">Stop audio</button>
+                            <button className="speech-button" onClick={stopSpeech} type="button">
+                              <Square aria-hidden="true" size={12} />
+                              Stop audio
+                            </button>
                           )}
                         </>
                       ) : speech.messageIndex === index && audioUrl.current !== null ? (
                         <>
                           {speech.status === "playing" ? (
-                            <button onClick={() => audioRef.current?.pause()} type="button">
+                            <button
+                              className="speech-button"
+                              onClick={() => audioRef.current?.pause()}
+                              type="button"
+                            >
+                              <Pause aria-hidden="true" size={14} />
                               Pause audio
                             </button>
                           ) : speech.status === "paused" ? (
-                            <button onClick={() => void playSpeech(index, true)} type="button">
+                            <button
+                              className="speech-button"
+                              onClick={() => void playSpeech(index, true)}
+                              type="button"
+                            >
+                              <Play aria-hidden="true" size={14} />
                               Resume audio
                             </button>
                           ) : (
-                            <button onClick={() => void playSpeech(index)} type="button">
+                            <button
+                              className="speech-button"
+                              onClick={() => void playSpeech(index)}
+                              type="button"
+                            >
+                              <Play aria-hidden="true" size={14} />
                               {speech.status === "ready" ? "Play audio" : "Retry playback"}
                             </button>
                           )}
                           {!voiceSessionActive && (
-                            <button onClick={stopSpeech} type="button">Stop audio</button>
+                            <button className="speech-button" onClick={stopSpeech} type="button">
+                              <Square aria-hidden="true" size={12} />
+                              Stop audio
+                            </button>
                           )}
                         </>
                       ) : (
                         <button
+                          className="speech-button"
                           disabled={
                             speech.status === "generating" ||
                             voiceSessionActive ||
@@ -1263,6 +1453,7 @@ function App() {
                           onClick={() => void generateSpeech(index, message.content)}
                           type="button"
                         >
+                          <Volume2 aria-hidden="true" size={14} />
                           {speech.status === "error" && speech.messageIndex === index
                             ? "Retry audio"
                             : "Generate audio"}
@@ -1290,138 +1481,164 @@ function App() {
                 </article>
               ))
             )}
-            {loading && <p className="thinking" role="status">{assistantName} is thinking…</p>}
+            {loading && (
+              <div className="thinking" role="status">
+                <span aria-hidden="true" />
+                <span aria-hidden="true" />
+                <span aria-hidden="true" />
+                <span className="sr-only">{assistantName} is thinking…</span>
+              </div>
+            )}
             {error && <p className="error-message" role="alert">{error}</p>}
           </div>
 
-          <div className="recording-controls">
-            {voiceSettings.continuous_conversation_enabled && !voiceSessionActive && (
-              <button
-                disabled={
-                  loading ||
-                  speechInputBusy ||
-                  conversationBusy
-                }
-                onClick={() => void startVoiceConversation()}
-                type="button"
-              >
-                Start voice conversation
-              </button>
-            )}
-            {voiceSessionActive && (
-              <button onClick={stopVoiceConversation} type="button">
-                Stop voice conversation
-              </button>
-            )}
-            {transcriptionStatus === "recording" ? (
-              <button onClick={stopRecording} type="button">Stop recording</button>
-            ) : (
-              <button
-                disabled={
-                  loading ||
-                  voiceSessionActive ||
-                  transcriptionStatus === "requesting" ||
-                  transcriptionStatus === "transcribing"
-                }
-                onClick={() => void startRecording()}
-                type="button"
-              >
-                {transcriptionStatus === "requesting"
-                  ? "Requesting microphone…"
-                  : transcriptionStatus === "transcribing"
-                    ? "Transcribing…"
-                    : "Start recording"}
-              </button>
-            )}
-            {transcriptionStatus === "transcribed" && (
-              <button onClick={discardTranscription} type="button">
-                Discard transcription
-              </button>
-            )}
-            {transcriptionStatus === "recording" && (
-              <p role="status">
-                {voiceSessionActive
-                  ? "Listening locally. Pause to finish the utterance, or stop recording."
-                  : "Recording locally. Stop to transcribe."}
-              </p>
-            )}
-            {transcriptionStatus === "transcribing" && (
-              <p role="status">Transcribing locally…</p>
-            )}
-            {transcriptionStatus === "transcribed" && (
-              <p role="status">Review or edit the transcription before sending.</p>
-            )}
-            {transcriptionError && <p role="alert">{transcriptionError}</p>}
-            {(speech.status === "generating" ||
-              speech.status === "playing" ||
-              (voiceSessionActive && speech.status === "paused")) && (
-              <button onClick={interruptAndListen} type="button">
-                Interrupt and listen
-              </button>
-            )}
-            {voiceSessionActive && (
-              <p className="voice-status" role="status">
-                {transcriptionStatus === "requesting"
-                  ? "Requesting microphone permission…"
-                  : transcriptionStatus === "recording"
-                    ? "Listening for your voice."
-                    : transcriptionStatus === "transcribing"
-                      ? "Processing your speech locally…"
-                      : loading
-                        ? "Processing your request locally…"
-                        : speech.status === "generating"
-                          ? "Preparing the spoken response…"
-                          : speech.status === "playing"
-                            ? "Speaking. Use Interrupt and listen to barge in."
-                            : speech.status === "paused"
-                              ? "Speech is paused."
-                              : "Voice conversation is active."}
-              </p>
-            )}
-            {voiceRuntimeError && (
-              <p className="voice-runtime-note" role="status">{voiceRuntimeError}</p>
-            )}
+          <div className="chat__composer">
+            <div className="recording-controls">
+              {voiceSettings.continuous_conversation_enabled && !voiceSessionActive && (
+                <button
+                  className="pill-button"
+                  disabled={loading || speechInputBusy || conversationBusy}
+                  onClick={() => void startVoiceConversation()}
+                  type="button"
+                >
+                  <AudioLines aria-hidden="true" size={14} />
+                  Start voice conversation
+                </button>
+              )}
+              {voiceSessionActive && (
+                <button className="pill-button pill-button--on" onClick={stopVoiceConversation} type="button">
+                  <Square aria-hidden="true" size={12} />
+                  Stop voice conversation
+                </button>
+              )}
+              {(speech.status === "generating" ||
+                speech.status === "playing" ||
+                (voiceSessionActive && speech.status === "paused")) && (
+                <button className="pill-button" onClick={interruptAndListen} type="button">
+                  <Mic aria-hidden="true" size={14} />
+                  Interrupt and listen
+                </button>
+              )}
+              {transcriptionStatus === "transcribed" && (
+                <button className="pill-button" onClick={discardTranscription} type="button">
+                  Discard transcription
+                </button>
+              )}
+              {transcriptionStatus === "recording" && (
+                <p role="status">
+                  {voiceSessionActive
+                    ? "Listening locally. Pause to finish the utterance, or stop recording."
+                    : "Recording locally. Stop to transcribe."}
+                </p>
+              )}
+              {transcriptionStatus === "transcribing" && (
+                <p role="status">Transcribing locally…</p>
+              )}
+              {transcriptionStatus === "transcribed" && (
+                <p role="status">Review or edit the transcription before sending.</p>
+              )}
+              {transcriptionError && <p role="alert">{transcriptionError}</p>}
+              {voiceSessionActive && (
+                <p className="voice-status" role="status">
+                  {transcriptionStatus === "requesting"
+                    ? "Requesting microphone permission…"
+                    : transcriptionStatus === "recording"
+                      ? "Listening for your voice."
+                      : transcriptionStatus === "transcribing"
+                        ? "Processing your speech locally…"
+                        : loading
+                          ? "Processing your request locally…"
+                          : speech.status === "generating"
+                            ? "Preparing the spoken response…"
+                            : speech.status === "playing"
+                              ? "Speaking. Use Interrupt and listen to barge in."
+                              : speech.status === "paused"
+                                ? "Speech is paused."
+                                : "Voice conversation is active."}
+                </p>
+              )}
+              {voiceRuntimeError && (
+                <p className="voice-runtime-note" role="status">{voiceRuntimeError}</p>
+              )}
+            </div>
+            <form className="composer" onSubmit={sendMessage}>
+              <label className="sr-only" htmlFor="chat-message">Message</label>
+              <textarea
+                className="composer__input"
+                id="chat-message"
+                disabled={speechInputBusy || conversationBusy || voiceSessionActive}
+                maxLength={4000}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === "Enter" &&
+                    !event.shiftKey &&
+                    !event.nativeEvent.isComposing
+                  ) {
+                    event.preventDefault();
+                    void sendMessage();
+                  }
+                }}
+                placeholder={`Message ${assistantName}…`}
+                rows={1}
+                value={draft}
+              />
+              <div className="composer__side">
+                {transcriptionStatus === "recording" ? (
+                  <button
+                    aria-label="Stop recording"
+                    className="mic-button mic-button--on"
+                    onClick={stopRecording}
+                    title="Stop recording"
+                    type="button"
+                  >
+                    <Square aria-hidden="true" fill="currentColor" size={12} />
+                  </button>
+                ) : (
+                  <button
+                    aria-label={
+                      transcriptionStatus === "requesting"
+                        ? "Requesting microphone…"
+                        : transcriptionStatus === "transcribing"
+                          ? "Transcribing…"
+                          : "Start recording"
+                    }
+                    className="mic-button"
+                    disabled={
+                      loading ||
+                      voiceSessionActive ||
+                      transcriptionStatus === "requesting" ||
+                      transcriptionStatus === "transcribing"
+                    }
+                    onClick={() => void startRecording()}
+                    title="Talk instead of typing"
+                    type="button"
+                  >
+                    <Mic aria-hidden="true" size={18} />
+                  </button>
+                )}
+                <button
+                  aria-label="Send"
+                  className="send-button"
+                  disabled={
+                    loading ||
+                    speechInputBusy ||
+                    conversationBusy ||
+                    voiceSessionActive ||
+                    !draft.trim()
+                  }
+                  title="Send"
+                  type="submit"
+                >
+                  <ArrowUp aria-hidden="true" size={18} />
+                </button>
+              </div>
+            </form>
+            <p className="chat__hint">
+              <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> new line ·
+              everything stays on this computer
+            </p>
           </div>
-          <form className="composer" onSubmit={sendMessage}>
-            <label className="sr-only" htmlFor="chat-message">Message</label>
-            <textarea
-              id="chat-message"
-              disabled={speechInputBusy || conversationBusy || voiceSessionActive}
-              maxLength={4000}
-              onChange={(event) => setDraft(event.target.value)}
-              placeholder="Write a message…"
-              rows={2}
-              value={draft}
-            />
-            <button
-              disabled={
-                loading ||
-                speechInputBusy ||
-                conversationBusy ||
-                voiceSessionActive ||
-                !draft.trim()
-              }
-              type="submit"
-            >
-              {loading ? "Thinking…" : "Send"}
-            </button>
-          </form>
-          <p className="chat-note">
-            Conversations stay in local storage. Long-term memories are saved only
-            when you approve them below.
-          </p>
-          <div className="memory-settings">
-            <PersonalitySettings onNameChange={setAssistantName} />
-            <PersonalizationSettings
-              onSettingsChange={handlePersonalizationSettingsChange}
-              onUsePrompt={usePersonalizationPrompt}
-            />
-            <VoiceSettings onSettingsChange={handleVoiceSettingsChange} />
-          </div>
-          <MemorySettings
-            conversationId={conversationId}
-            personalizationEnabled={personalizationEnabled}
-          />
           <audio
             aria-hidden="true"
             hidden
@@ -1461,8 +1678,99 @@ function App() {
             ref={audioRef}
           />
         </section>
-      </section>
-    </main>
+      </main>
+
+      <Drawer onClose={closeDrawer} open={drawer === "history"} title="Conversations">
+        {conversations.length === 0 ? (
+          <div className="drawer__empty">
+            <MessagesSquare aria-hidden="true" size={28} />
+            <p>No saved conversations yet.</p>
+          </div>
+        ) : (
+          <ul className="drawer__list">
+            {conversations.map((conversation) => (
+              <li
+                className={`history-item ${
+                  conversation.id === conversationId ? "history-item--current" : ""
+                }`}
+                key={conversation.id}
+              >
+                <button
+                  aria-current={conversation.id === conversationId ? "true" : undefined}
+                  className="history-item__open"
+                  disabled={conversationBusy}
+                  onClick={() => {
+                    closeDrawer();
+                    void selectConversation(conversation.id);
+                  }}
+                  type="button"
+                >
+                  <span className="history-item__title">{conversation.title}</span>
+                </button>
+                {confirmingDelete === conversation.id ? (
+                  <span className="history-item__confirm">
+                    <button
+                      className="text-button text-button--danger"
+                      onClick={() => {
+                        setConfirmingDelete(null);
+                        void deleteConversation(conversation.id);
+                      }}
+                      type="button"
+                    >
+                      Delete
+                    </button>
+                    <button
+                      className="text-button"
+                      onClick={() => setConfirmingDelete(null)}
+                      type="button"
+                    >
+                      Keep
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    aria-label={`Delete ${conversation.title}`}
+                    className="icon-button icon-button--subtle"
+                    disabled={conversationBusy}
+                    onClick={() => setConfirmingDelete(conversation.id)}
+                    type="button"
+                  >
+                    <Trash2 aria-hidden="true" size={16} />
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Drawer>
+
+      <Drawer onClose={closeDrawer} open={drawer === "voice"} title="Voice">
+        <div className="drawer__sections">
+          <VoiceSettings
+            key={voiceSettingsKey}
+            onSettingsChange={handleVoiceSettingsChange}
+          />
+        </div>
+      </Drawer>
+
+      <Drawer onClose={closeDrawer} open={drawer === "context"} title="Context" wide>
+        <p className="drawer__intro">
+          What {assistantName} knows about you and how it talks. Everything here is
+          saved only on this computer and applies from your next message.
+        </p>
+        <div className="drawer__sections">
+          <MemorySettings
+            conversationId={conversationId}
+            personalizationEnabled={personalizationEnabled}
+          />
+          <PersonalitySettings onNameChange={handleAssistantNameChange} />
+          <PersonalizationSettings
+            onSettingsChange={handlePersonalizationSettingsChange}
+            onUsePrompt={usePersonalizationPrompt}
+          />
+        </div>
+      </Drawer>
+    </div>
   );
 }
 

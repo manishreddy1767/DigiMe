@@ -1,4 +1,12 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
@@ -62,6 +70,15 @@ function installAppFetch(handler: AppFetchHandler) {
       return customResponse;
     }
 
+    if (path === "/api/status") {
+      return jsonResponse({
+        assistant_name: "Digital Me",
+        model: "llama3.2:3b",
+        deep_reasoning: false,
+        ollama_reachable: true,
+        model_available: true,
+      });
+    }
     if (path === "/api/conversations" && (!init?.method || init.method === "GET")) {
       return jsonResponse([]);
     }
@@ -270,9 +287,12 @@ describe("chat interface", () => {
 
     expect(await screen.findByText("Latest question")).toBeTruthy();
     expect(screen.getByText("Latest answer")).toBeTruthy();
-    fireEvent.change(screen.getByRole("combobox", { name: "Conversation history" }), {
-      target: { value: "older" },
-    });
+    fireEvent.click(screen.getByRole("button", { name: "Conversation history" }));
+    const history = screen.getByRole("complementary", { name: "Conversations" });
+    expect(
+      within(history).getByRole("button", { name: "Latest chat" }).getAttribute("aria-current"),
+    ).toBe("true");
+    fireEvent.click(within(history).getByRole("button", { name: "Older chat" }));
 
     expect(await screen.findByText("Older question")).toBeTruthy();
     expect(screen.queryByText("Latest question")).toBeNull();
@@ -421,8 +441,7 @@ describe("chat interface", () => {
     );
     expect(document.querySelector(".message.user p")?.textContent).toBe("Are you there?");
     expect(
-      (screen.getByRole("combobox", { name: "Conversation history" }) as HTMLSelectElement)
-        .value,
+      screen.getByRole("region", { name: "Conversation" }).getAttribute("data-conversation-id"),
     ).toBe("failed-conversation");
   });
 

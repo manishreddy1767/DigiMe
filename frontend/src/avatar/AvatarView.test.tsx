@@ -15,6 +15,7 @@ vi.mock("three", async (importOriginal) => {
     WebGLRenderer: class {
       domElement = document.createElement("canvas");
       outputColorSpace = "";
+      setClearColor = vi.fn();
       setPixelRatio = vi.fn();
       setSize = vi.fn();
       render(scene: THREE.Scene) {

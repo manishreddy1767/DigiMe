@@ -64,11 +64,12 @@ function AvatarView({
       aa: 0,
       blink: 0,
     };
+    // Transparent backdrop: the surrounding stage provides the lighting and colour.
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color("#151c2a");
 
     const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 100);
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setClearColor(0x000000, 0);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     container.appendChild(renderer.domElement);
