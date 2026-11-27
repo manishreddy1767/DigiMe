@@ -97,6 +97,27 @@ describe("app layout", () => {
     expect(document.title).toBe("Nova · Digital Me");
   });
 
+  it("says it is an AI digital version when speaking as yourself", async () => {
+    installFetch((path) =>
+      path === "/api/status"
+        ? jsonResponse({
+            assistant_name: "Nova",
+            model: "llama3.2:3b",
+            deep_reasoning: false,
+            speaking_as: "self",
+            ollama_reachable: true,
+            model_available: true,
+          })
+        : path === "/api/conversations"
+          ? jsonResponse([])
+          : undefined,
+    );
+    render(<App />);
+
+    expect(await screen.findByText("AI digital version · not a live person")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Tell me a little about yourself." })).toBeTruthy();
+  });
+
   it("reports when the local server cannot be reached", async () => {
     installFetch((path) => {
       if (path === "/api/status") throw new TypeError("Failed to fetch");

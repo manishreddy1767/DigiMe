@@ -6,6 +6,7 @@ type Personality = {
   response_length: "concise" | "balanced" | "detailed";
   custom_instructions: string;
   deep_reasoning: boolean;
+  speaking_as: "assistant" | "self";
   updated_at: string;
 };
 
@@ -15,6 +16,7 @@ const DEFAULT_PERSONALITY: Personality = {
   response_length: "balanced",
   custom_instructions: "",
   deep_reasoning: false,
+  speaking_as: "assistant",
   updated_at: "",
 };
 
@@ -61,6 +63,7 @@ async function readPersonality(response: Response): Promise<Personality> {
     response_length: result.response_length,
     custom_instructions: result.custom_instructions,
     deep_reasoning: "deep_reasoning" in result && result.deep_reasoning === true,
+    speaking_as: "speaking_as" in result && result.speaking_as === "self" ? "self" : "assistant",
     updated_at: result.updated_at,
   };
 }
@@ -105,6 +108,7 @@ function PersonalitySettings({
           response_length: personality.response_length,
           custom_instructions: personality.custom_instructions,
           deep_reasoning: personality.deep_reasoning,
+          speaking_as: personality.speaking_as,
         }),
       });
       const saved = await readPersonality(response);
@@ -144,7 +148,22 @@ function PersonalitySettings({
       </p>
       <form className="settings-form" onSubmit={save}>
         <label>
-          Personality name
+          Speak as
+          <select
+            onChange={(event) =>
+              setPersonality({
+                ...personality,
+                speaking_as: event.target.value === "self" ? "self" : "assistant",
+              })
+            }
+            value={personality.speaking_as}
+          >
+            <option value="self">Myself: my digital version, in the first person</option>
+            <option value="assistant">An assistant that helps me</option>
+          </select>
+        </label>
+        <label>
+          {personality.speaking_as === "self" ? "Your name" : "Personality name"}
           <input
             maxLength={100}
             onChange={(event) =>

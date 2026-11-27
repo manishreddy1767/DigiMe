@@ -94,6 +94,12 @@ const SUGGESTIONS = [
   "Explain something I am learning, simply.",
 ];
 
+const SELF_SUGGESTIONS = [
+  "Tell me a little about yourself.",
+  "What are you working on these days?",
+  "What are you learning right now?",
+];
+
 const STAGE_HUES: Record<AvatarEmotion, string> = {
   neutral: "#8ea2c8",
   happy: "#f2c27b",
@@ -1396,7 +1402,7 @@ function App() {
                   Send a message to start a conversation.
                 </p>
                 <div className="chips">
-                  {SUGGESTIONS.map((suggestion) => (
+                  {(appStatus?.speaking_as === "self" ? SELF_SUGGESTIONS : SUGGESTIONS).map((suggestion) => (
                     <button
                       className="chip"
                       disabled={loading || conversationBusy || voiceSessionActive}

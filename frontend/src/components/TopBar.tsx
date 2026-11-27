@@ -11,6 +11,7 @@ export type AppStatus = {
   assistant_name: string;
   model: string;
   deep_reasoning: boolean;
+  speaking_as?: "assistant" | "self";
   ollama_reachable: boolean;
   model_available: boolean;
 };
@@ -71,7 +72,11 @@ function TopBar({
         </div>
         <div className="identity__text">
           <h1 className="identity__name">{name}</h1>
-          <p className="identity__disclosure">AI assistant · runs on this computer</p>
+          <p className="identity__disclosure">
+            {status?.speaking_as === "self"
+              ? "AI digital version · not a live person"
+              : "AI assistant · runs on this computer"}
+          </p>
         </div>
       </div>
       <div className="topbar__actions">

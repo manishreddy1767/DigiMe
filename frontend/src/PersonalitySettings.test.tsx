@@ -138,4 +138,27 @@ describe("digital personality settings", () => {
     expect(await screen.findByText("Personality settings saved locally.")).toBeTruthy();
     expect(saved).toMatchObject({ name: "Nova", deep_reasoning: true });
   });
+
+  it("saves speaking as yourself, in the first person", async () => {
+    let saved = { ...defaultPersonality, name: "Asha" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: string, init?: RequestInit) => {
+        if (init?.method === "PUT") {
+          saved = { ...JSON.parse(init.body as string), updated_at: "2026-11-27" };
+        }
+        return response(saved);
+      }),
+    );
+    render(<PersonalitySettings />);
+
+    fireEvent.click(await screen.findByText("Digital personality"));
+    await screen.findByDisplayValue("Asha");
+    fireEvent.change(screen.getByLabelText("Speak as"), { target: { value: "self" } });
+    expect(screen.getByRole("textbox", { name: "Your name" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Save personality" }));
+
+    expect(await screen.findByText("Personality settings saved locally.")).toBeTruthy();
+    expect(saved).toMatchObject({ name: "Asha", speaking_as: "self" });
+  });
 });
