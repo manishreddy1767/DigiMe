@@ -1,5 +1,6 @@
 import gc
 import logging
+import re
 import wave
 from dataclasses import dataclass
 from functools import lru_cache
@@ -19,6 +20,41 @@ KOKORO_VOICE = "af_heart"
 SAMPLE_RATE = 24_000
 TTS_TEST_TEXT = "This is a local speech processing check."
 logger = logging.getLogger(__name__)
+
+_CODE_BLOCK = re.compile(r"```.*?(?:```|$)", re.DOTALL)
+_INLINE_CODE = re.compile(r"`([^`\n]*)`")
+_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
+_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+", re.MULTILINE)
+_BLOCKQUOTE = re.compile(r"^\s{0,3}>\s?", re.MULTILINE)
+_LIST_MARKER = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+", re.MULTILINE)
+_TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{3,}.*$", re.MULTILINE)
+_HORIZONTAL_RULE = re.compile(r"^\s*(?:[-*_]\s*){3,}$", re.MULTILINE)
+_EMPHASIS = re.compile(r"(\*{1,3}|~~)(?=\S)(.+?)(?<=\S)\1")
+_UNDERSCORE_EMPHASIS = re.compile(r"(?<!\w)(_{1,3})(?=\S)(.+?)(?<=\S)\1(?!\w)")
+_EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]")
+
+
+def prepare_speech_text(text: str) -> str:
+    """Convert Markdown-formatted chat text into plain text suitable for speech."""
+    spoken = _CODE_BLOCK.sub(" (code omitted) ", text)
+    spoken = _INLINE_CODE.sub(r"\1", spoken)
+    spoken = _IMAGE.sub(r"\1", spoken)
+    spoken = _LINK.sub(r"\1", spoken)
+    spoken = _TABLE_RULE.sub("", spoken)
+    spoken = _HORIZONTAL_RULE.sub("", spoken)
+    spoken = _HEADING.sub("", spoken)
+    spoken = _BLOCKQUOTE.sub("", spoken)
+    spoken = _LIST_MARKER.sub("", spoken)
+    previous = None
+    while previous != spoken:
+        previous = spoken
+        spoken = _EMPHASIS.sub(r"\2", spoken)
+        spoken = _UNDERSCORE_EMPHASIS.sub(r"\2", spoken)
+    spoken = _EMOJI.sub("", spoken)
+    spoken = spoken.replace("|", ", ")
+    lines = [" ".join(line.split()) for line in spoken.splitlines()]
+    return "\n".join(line for line in lines if line).strip()
 
 
 @dataclass(frozen=True)
@@ -67,15 +103,15 @@ class KokoroService:
                 ) from cpu_error
         self.load_seconds = perf_counter() - started
 
-    def synthesize_to_wav(self, text: str) -> bytes:
+    def synthesize_to_wav(self, text: str, voice: str = KOKORO_VOICE) -> bytes:
         with self._inference_lock:
             try:
-                return self._synthesize_to_wav(text)
+                return self._synthesize_to_wav(text, voice)
             except RuntimeError as error:
                 if self.device != KOKORO_GPU_DEVICE or not self._is_cuda_oom(error):
                     raise
                 self._fallback_to_cpu(error)
-                return self._synthesize_to_wav(text)
+                return self._synthesize_to_wav(text, voice)
 
     def warm_up(self) -> None:
         self.synthesize_to_wav(TTS_TEST_TEXT)
@@ -137,7 +173,7 @@ class KokoroService:
             ) from cpu_error
         self.device = KOKORO_CPU_DEVICE
 
-    def _synthesize_to_wav(self, text: str) -> bytes:
+    def _synthesize_to_wav(self, text: str, voice: str = KOKORO_VOICE) -> bytes:
         try:
             import numpy as np
             import soundfile as sf
@@ -149,7 +185,7 @@ class KokoroService:
 
         chunks = []
         try:
-            for _, _, audio in self._pipeline(text, voice=KOKORO_VOICE):
+            for _, _, audio in self._pipeline(text, voice=voice):
                 if hasattr(audio, "detach"):
                     audio = audio.detach().cpu().numpy()
                 chunks.append(np.asarray(audio, dtype=np.float32).reshape(-1))

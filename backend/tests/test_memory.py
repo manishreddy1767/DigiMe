@@ -75,3 +75,29 @@ def test_memory_endpoint_rejects_blank_content(tmp_path, monkeypatch) -> None:
     response = TestClient(app).post("/api/memories", json={"content": "  "})
 
     assert response.status_code == 422
+
+
+def test_memory_search_matches_word_forms_and_rebuilds_old_indexes(tmp_path) -> None:
+    import sqlite3
+
+    from app.services.storage import Database
+
+    database_path = tmp_path / "digital-me.sqlite3"
+    database = Database(database_path)
+    database.create_memory("My project Atlas detects code vulnerabilities.")
+
+    assert [m["content"] for m in database.search_memories("What projects am I working on?")] == [
+        "My project Atlas detects code vulnerabilities."
+    ]
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP TABLE memory_search")
+        connection.execute("CREATE VIRTUAL TABLE memory_search USING fts5(content)")
+        connection.execute(
+            "INSERT INTO memory_search (rowid, content) SELECT rowid, content FROM memories"
+        )
+
+    rebuilt = Database(database_path)
+    assert len(rebuilt.search_memories("projects")) == 1
+    rebuilt.create_memory("I am working on interview preparation.")
+    assert len(rebuilt.search_memories("work")) == 1

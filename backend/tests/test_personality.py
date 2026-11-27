@@ -71,3 +71,49 @@ def test_personality_api_rejects_invalid_values_and_blank_name(
 
     assert invalid_style.status_code == 422
     assert blank_name.status_code == 422
+
+
+def test_deep_reasoning_persists_resets_and_migrates_older_databases(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import sqlite3
+
+    database_path = tmp_path / "digital-me.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE personality (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                name TEXT NOT NULL DEFAULT 'Digital Me',
+                communication_style TEXT NOT NULL DEFAULT 'friendly',
+                response_length TEXT NOT NULL DEFAULT 'balanced',
+                custom_instructions TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO personality (id, name, updated_at) VALUES (1, 'Old Name', '');
+            CREATE TABLE voice_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                auto_play_responses INTEGER NOT NULL DEFAULT 0,
+                continuous_conversation_enabled INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO voice_settings (id, updated_at) VALUES (1, '');
+            """
+        )
+
+    migrated = Database(database_path)
+    assert migrated.get_personality()["name"] == "Old Name"
+    assert migrated.get_personality()["deep_reasoning"] is False
+    assert migrated.get_voice_settings()["voice"] == "af_heart"
+
+    monkeypatch.setenv("DIGITAL_ME_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    saved = client.put(
+        "/api/personality",
+        json={"name": "Old Name", "deep_reasoning": True},
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["deep_reasoning"] is True
+    assert client.get("/api/personality").json()["deep_reasoning"] is True
+    assert client.post("/api/personality/reset").json()["deep_reasoning"] is False

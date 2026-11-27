@@ -10,9 +10,11 @@ from app.services.ollama import (
     MAX_ADDITIONAL_CONTEXT_CHARS,
     MAX_CONTEXT_CHARS,
     MODEL,
+    REASONING_MODEL,
     OllamaService,
     SYSTEM_PROMPT,
     build_bounded_chat_messages,
+    remove_hidden_reasoning,
 )
 
 
@@ -119,7 +121,47 @@ def test_ollama_chat_uses_local_qwen_and_returns_mocked_response() -> None:
     assert request_body["model"] == MODEL
     assert request_body["options"]["num_ctx"] == CONTEXT_SIZE
     assert request_body["messages"][-1] == messages[0]
+    assert "think" not in request_body
     assert result == "Hello from the local model."
+
+
+def test_deep_reasoning_enables_thinking_and_hidden_reasoning_is_removed() -> None:
+    mocked_response = MockResponse(
+        json.dumps(
+            {"message": {"content": "<think>working it out</think>\nThe answer is 391."}}
+        ).encode()
+    )
+    messages = [{"role": "user", "content": "What is 17*23?"}]
+
+    with patch("app.services.ollama.urlopen", return_value=mocked_response) as mocked_urlopen:
+        result = OllamaService().generate_chat_response(
+            messages,
+            personality={"name": "Digital Me", "deep_reasoning": True},
+        )
+
+    request_body = json.loads(mocked_urlopen.call_args.args[0].data)
+    assert request_body["model"] == REASONING_MODEL
+    assert request_body["think"] is True
+    assert result == "The answer is 391."
+
+
+def test_reasoning_leaked_without_an_opening_tag_is_removed() -> None:
+    leaked = "Okay, the user asked about 17*23. Let me compute.\n</think>\n\n391"
+
+    assert remove_hidden_reasoning(leaked) == "391"
+    assert remove_hidden_reasoning("<think>a</think>\nb") == "b"
+    assert remove_hidden_reasoning("Plain answer.") == "Plain answer."
+
+
+def test_current_time_is_added_to_the_system_prompt() -> None:
+    bounded = build_bounded_chat_messages(
+        [{"role": "user", "content": "What day is it?"}],
+        current_time="Friday, 27 November 2026, 10:30 IST",
+    )
+
+    assert "Current local date and time: Friday, 27 November 2026, 10:30 IST" in (
+        bounded[0]["content"]
+    )
 
 
 def test_ollama_memory_suggestions_are_local_json_and_bounded() -> None:
@@ -431,6 +473,8 @@ def test_personality_settings_apply_to_each_conversation_and_chat_cannot_change_
 
     assert mocked_chat.call_count == 2
     for call in mocked_chat.call_args_list:
+        assert call.kwargs["current_time"]
+        assert call.kwargs["personality"]["deep_reasoning"] is False
         assert call.kwargs["personality"]["name"] == updated["name"]
         assert call.kwargs["personality"]["communication_style"] == "casual"
         assert call.kwargs["personality"]["custom_instructions"] == "Use examples."

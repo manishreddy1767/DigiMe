@@ -1,11 +1,15 @@
 import json
+import re
 import time
 from dataclasses import dataclass
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 OLLAMA_URL = "http://127.0.0.1:11434"
-MODEL = "qwen3:4b"
+# Fast, non-thinking model for everyday chat; fits mostly on a 4 GB GPU.
+MODEL = "llama3.2:3b"
+# Slower model that reasons before answering; used only when deep reasoning is on.
+REASONING_MODEL = "qwen3:4b"
 CONTEXT_SIZE = 4096
 MAX_HISTORY_MESSAGES = 20
 MAX_CONTEXT_CHARS = 12_000
@@ -35,6 +39,21 @@ COMMUNICATION_STYLE_GUIDANCE = {
     "professional": "Be polished, respectful, and direct.",
     "casual": "Be relaxed, natural, and conversational.",
 }
+_THINK_BLOCK = re.compile(r"<think>.*?(?:</think>|$)", re.DOTALL | re.IGNORECASE)
+_THINK_END = re.compile(r"</think>", re.IGNORECASE)
+
+
+def remove_hidden_reasoning(text: str) -> str:
+    """Drop model reasoning that leaked into the reply instead of the thinking field.
+
+    Some thinking models emit their reasoning as plain content that ends with
+    ``</think>`` (the opening tag is in the prompt template), so everything up to
+    the last closing tag is reasoning, not the answer.
+    """
+    parts = _THINK_END.split(text)
+    if len(parts) > 1:
+        text = parts[-1]
+    return _THINK_BLOCK.sub("", text).strip()
 RESPONSE_LENGTH_GUIDANCE = {
     "concise": "Prefer brief answers that cover only the essentials.",
     "balanced": "Give a clear answer with enough detail to be useful.",
@@ -101,23 +120,29 @@ class OllamaService:
         self,
         messages: list[dict[str, str]],
         additional_context: str | None = None,
-        personality: dict[str, str] | None = None,
+        personality: dict[str, object] | None = None,
         chat_guidance: str | None = None,
+        current_time: str | None = None,
     ) -> str:
         bounded_messages = build_bounded_chat_messages(
             messages,
             additional_context,
             personality,
             chat_guidance,
+            current_time,
         )
-        request_body = {
-            "model": MODEL,
+        deep_reasoning = bool(personality and personality.get("deep_reasoning"))
+        model = REASONING_MODEL if deep_reasoning else MODEL
+        request_body: dict[str, object] = {
+            "model": model,
             "messages": bounded_messages,
             "stream": False,
             "options": {
                 "num_ctx": CONTEXT_SIZE,
             },
         }
+        if deep_reasoning:
+            request_body["think"] = True
         request = Request(
             f"{OLLAMA_URL}/api/chat",
             data=json.dumps(request_body).encode("utf-8"),
@@ -131,7 +156,7 @@ class OllamaService:
         except (URLError, TimeoutError) as error:
             raise RuntimeError(
                 "Could not reach Ollama at 127.0.0.1:11434. Start Ollama and "
-                f"ensure {MODEL} is available."
+                f"ensure {model} is available."
             ) from error
         except (json.JSONDecodeError, UnicodeDecodeError) as error:
             raise RuntimeError("Ollama returned an invalid chat response.") from error
@@ -146,6 +171,7 @@ class OllamaService:
             and isinstance(response_message.get("content"), str)
             else ""
         )
+        text = remove_hidden_reasoning(text)
         if not text:
             raise RuntimeError("Ollama returned no chat text.")
 
@@ -228,8 +254,9 @@ class OllamaService:
 def build_bounded_chat_messages(
     messages: list[dict[str, str]],
     additional_context: str | None = None,
-    personality: dict[str, str] | None = None,
+    personality: dict[str, object] | None = None,
     chat_guidance: str | None = None,
+    current_time: str | None = None,
 ) -> list[dict[str, str]]:
     context = (additional_context or "").strip()[:MAX_ADDITIONAL_CONTEXT_CHARS]
     system_message = SYSTEM_PROMPT
@@ -243,10 +270,15 @@ def build_bounded_chat_messages(
             f"- Communication style: {COMMUNICATION_STYLE_GUIDANCE.get(style, COMMUNICATION_STYLE_GUIDANCE['friendly'])}\n"
             f"- Response length: {RESPONSE_LENGTH_GUIDANCE.get(length, RESPONSE_LENGTH_GUIDANCE['balanced'])}"
         )
-        custom_instructions = personality.get("custom_instructions", "").strip()
+        custom_instructions = str(personality.get("custom_instructions", "")).strip()
         if custom_instructions:
             personality_lines += f"\n- Custom instructions: {custom_instructions[:2_000]}"
         system_message = f"{system_message}\n\n{personality_lines}"
+    if current_time:
+        system_message += (
+            f"\n\nCurrent local date and time: {current_time}. Use it for questions "
+            "about today, dates, schedules, or elapsed time."
+        )
     guidance = (chat_guidance or "").strip()
     if guidance:
         system_message += f"\n\nAnswerability check:\n{guidance[:1_200]}"

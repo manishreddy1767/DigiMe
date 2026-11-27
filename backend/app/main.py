@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime
 from threading import Thread
 from typing import AsyncIterator, Literal
 
@@ -20,9 +21,15 @@ from app.services.personalization import (
     find_recurring_preference_suggestions,
     summarize_recurring_topics,
 )
-from app.services.speech import get_kokoro_service, get_whisper_service
+from app.services.speech import (
+    get_kokoro_service,
+    get_whisper_service,
+    prepare_speech_text,
+)
 from app.services.storage import (
+    AVAILABLE_VOICES,
     DEFAULT_PERSONALITY,
+    DEFAULT_VOICE,
     Database,
 )
 
@@ -111,6 +118,7 @@ class PersonalityUpdate(BaseModel):
         default=DEFAULT_PERSONALITY["response_length"]
     )
     custom_instructions: str = Field(default="", max_length=2_000)
+    deep_reasoning: bool = DEFAULT_PERSONALITY["deep_reasoning"]
 
     @field_validator("name", "custom_instructions")
     @classmethod
@@ -128,6 +136,14 @@ class PersonalityUpdate(BaseModel):
 class VoiceSettingsUpdate(BaseModel):
     auto_play_responses: bool
     continuous_conversation_enabled: bool
+    voice: str = DEFAULT_VOICE
+
+    @field_validator("voice")
+    @classmethod
+    def voice_must_be_available(cls, value: str) -> str:
+        if value not in AVAILABLE_VOICES:
+            raise ValueError(f"Choose one of: {', '.join(AVAILABLE_VOICES)}.")
+        return value
 
 
 class PersonalizationSettingsUpdate(BaseModel):
@@ -166,6 +182,10 @@ class TTSRequest(BaseModel):
 
 class STTResponse(BaseModel):
     text: str
+
+
+def _current_local_time() -> str:
+    return datetime.now().astimezone().strftime("%A, %d %B %Y, %H:%M %Z")
 
 
 @app.get("/health")
@@ -213,22 +233,23 @@ def update_profile(profile: ProfileUpdate) -> dict[str, str]:
 
 
 @app.get("/api/personality")
-def get_personality() -> dict[str, str]:
+def get_personality() -> dict[str, object]:
     return Database().get_personality()
 
 
 @app.put("/api/personality")
-def update_personality(personality: PersonalityUpdate) -> dict[str, str]:
+def update_personality(personality: PersonalityUpdate) -> dict[str, object]:
     return Database().update_personality(
         name=personality.name,
         communication_style=personality.communication_style,
         response_length=personality.response_length,
         custom_instructions=personality.custom_instructions,
+        deep_reasoning=personality.deep_reasoning,
     )
 
 
 @app.post("/api/personality/reset")
-def reset_personality() -> dict[str, str]:
+def reset_personality() -> dict[str, object]:
     return Database().reset_personality()
 
 
@@ -242,6 +263,7 @@ def update_voice_settings(settings: VoiceSettingsUpdate) -> dict[str, object]:
     return Database().update_voice_settings(
         settings.auto_play_responses,
         settings.continuous_conversation_enabled,
+        settings.voice,
     )
 
 
@@ -517,6 +539,7 @@ def chat(request: ChatRequest) -> ChatResponse:
             additional_context="\n\n".join(context_sections) or None,
             personality=database.get_personality(),
             chat_guidance=chat_guidance,
+            current_time=_current_local_time(),
         )
     except RuntimeError as error:
         raise HTTPException(
@@ -533,8 +556,12 @@ def chat(request: ChatRequest) -> ChatResponse:
 
 @app.post("/api/tts")
 def text_to_speech(request: TTSRequest) -> Response:
+    spoken_text = prepare_speech_text(request.text)
+    if not spoken_text:
+        raise HTTPException(status_code=422, detail="There is no speakable text.")
+    voice = str(Database().get_voice_settings()["voice"])
     try:
-        audio = get_kokoro_service().synthesize_to_wav(request.text)
+        audio = get_kokoro_service().synthesize_to_wav(spoken_text, voice=voice)
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 

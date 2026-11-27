@@ -22,7 +22,38 @@ def test_voice_settings_default_and_persist_across_database_instances(
     } == DEFAULT_VOICE_SETTINGS
     assert updated["auto_play_responses"] is True
     assert updated["continuous_conversation_enabled"] is True
+    assert updated["voice"] == "af_heart"
     assert restored == updated
+
+
+def test_voice_choice_persists_and_rejects_unknown_voices(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DIGITAL_ME_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    saved = client.put(
+        "/api/voice-settings",
+        json={
+            "auto_play_responses": True,
+            "continuous_conversation_enabled": False,
+            "voice": "af_bella",
+        },
+    )
+    rejected = client.put(
+        "/api/voice-settings",
+        json={
+            "auto_play_responses": True,
+            "continuous_conversation_enabled": False,
+            "voice": "not-a-voice",
+        },
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["voice"] == "af_bella"
+    assert rejected.status_code == 422
+    assert client.get("/api/voice-settings").json()["voice"] == "af_bella"
 
 
 def test_voice_settings_api_loads_and_persists_locally(

@@ -26,10 +26,22 @@ DEFAULT_PERSONALITY = {
     "communication_style": "friendly",
     "response_length": "balanced",
     "custom_instructions": "",
+    "deep_reasoning": False,
 }
+DEFAULT_VOICE = "af_heart"
+AVAILABLE_VOICES = (
+    "af_heart",
+    "af_bella",
+    "af_nicole",
+    "af_sarah",
+    "am_michael",
+    "am_fenrir",
+    "am_puck",
+)
 DEFAULT_VOICE_SETTINGS = {
     "auto_play_responses": False,
     "continuous_conversation_enabled": False,
+    "voice": DEFAULT_VOICE,
 }
 class RecordNotFoundError(Exception):
     pass
@@ -152,7 +164,8 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS suggestions_by_conversation
                     ON memory_suggestions(conversation_id, status, created_at);
-                CREATE VIRTUAL TABLE IF NOT EXISTS memory_search USING fts5(content);
+                CREATE VIRTUAL TABLE IF NOT EXISTS memory_search
+                    USING fts5(content, tokenize = 'porter unicode61');
                 CREATE TRIGGER IF NOT EXISTS memories_after_insert
                     AFTER INSERT ON memories BEGIN
                         INSERT INTO memory_search (rowid, content)
@@ -182,6 +195,38 @@ class Database:
                 connection.execute("ALTER TABLE memories ADD COLUMN embedding BLOB")
             if "embedding_model" not in memory_columns:
                 connection.execute("ALTER TABLE memories ADD COLUMN embedding_model TEXT")
+            search_schema = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'memory_search'"
+            ).fetchone()
+            if search_schema is not None and "porter" not in search_schema["sql"]:
+                # Rebuild older unstemmed indexes so "projects" also matches "project".
+                connection.execute("DROP TABLE memory_search")
+                connection.execute(
+                    "CREATE VIRTUAL TABLE memory_search "
+                    "USING fts5(content, tokenize = 'porter unicode61')"
+                )
+                connection.execute(
+                    "INSERT INTO memory_search (rowid, content) "
+                    "SELECT rowid, content FROM memories"
+                )
+            personality_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(personality)").fetchall()
+            }
+            if "deep_reasoning" not in personality_columns:
+                connection.execute(
+                    "ALTER TABLE personality ADD COLUMN deep_reasoning "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (deep_reasoning IN (0, 1))"
+                )
+            voice_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(voice_settings)").fetchall()
+            }
+            if "voice" not in voice_columns:
+                connection.execute(
+                    "ALTER TABLE voice_settings ADD COLUMN voice TEXT NOT NULL "
+                    f"DEFAULT '{DEFAULT_VOICE}'"
+                )
 
     @staticmethod
     def _now() -> str:
@@ -310,16 +355,18 @@ class Database:
             ).fetchone()
         return dict(row)
 
-    def get_personality(self) -> dict[str, str]:
+    def get_personality(self) -> dict[str, object]:
         with self._connection() as connection:
             row = connection.execute(
                 """
                 SELECT name, communication_style, response_length,
-                       custom_instructions, updated_at
+                       custom_instructions, deep_reasoning, updated_at
                 FROM personality WHERE id = 1
                 """
             ).fetchone()
-        return dict(row)
+        personality = dict(row)
+        personality["deep_reasoning"] = bool(personality["deep_reasoning"])
+        return personality
 
     def update_personality(
         self,
@@ -327,34 +374,45 @@ class Database:
         communication_style: str,
         response_length: str,
         custom_instructions: str,
-    ) -> dict[str, str]:
+        deep_reasoning: bool = False,
+    ) -> dict[str, object]:
         now = self._now()
         with self._connection() as connection:
             connection.execute(
                 """
                 UPDATE personality
                 SET name = ?, communication_style = ?, response_length = ?,
-                    custom_instructions = ?, updated_at = ?
+                    custom_instructions = ?, deep_reasoning = ?, updated_at = ?
                 WHERE id = 1
                 """,
-                (name, communication_style, response_length, custom_instructions, now),
+                (
+                    name,
+                    communication_style,
+                    response_length,
+                    custom_instructions,
+                    int(deep_reasoning),
+                    now,
+                ),
             )
         return self.get_personality()
 
-    def reset_personality(self) -> dict[str, str]:
+    def reset_personality(self) -> dict[str, object]:
         return self.update_personality(**DEFAULT_PERSONALITY)
 
     def get_voice_settings(self) -> dict[str, object]:
         with self._connection() as connection:
             row = connection.execute(
                 """
-                SELECT auto_play_responses, continuous_conversation_enabled, updated_at
+                SELECT auto_play_responses, continuous_conversation_enabled, voice,
+                       updated_at
                 FROM voice_settings WHERE id = 1
                 """
             ).fetchone()
+        voice = row["voice"] if row["voice"] in AVAILABLE_VOICES else DEFAULT_VOICE
         return {
             "auto_play_responses": bool(row["auto_play_responses"]),
             "continuous_conversation_enabled": bool(row["continuous_conversation_enabled"]),
+            "voice": voice,
             "updated_at": row["updated_at"],
         }
 
@@ -362,17 +420,25 @@ class Database:
         self,
         auto_play_responses: bool,
         continuous_conversation_enabled: bool,
+        voice: str = DEFAULT_VOICE,
     ) -> dict[str, object]:
+        if voice not in AVAILABLE_VOICES:
+            raise ValueError(f"Unsupported voice: {voice}")
         now = self._now()
         with self._connection() as connection:
             connection.execute(
                 """
                 UPDATE voice_settings
                 SET auto_play_responses = ?, continuous_conversation_enabled = ?,
-                    updated_at = ?
+                    voice = ?, updated_at = ?
                 WHERE id = 1
                 """,
-                (int(auto_play_responses), int(continuous_conversation_enabled), now),
+                (
+                    int(auto_play_responses),
+                    int(continuous_conversation_enabled),
+                    voice,
+                    now,
+                ),
             )
         return self.get_voice_settings()
 
