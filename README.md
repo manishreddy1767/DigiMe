@@ -176,6 +176,14 @@ user profile and approved memories. Save changes explicitly or reset the
 personality to its defaults. Ordinary chat messages never change these saved
 settings. The name you choose is also shown on replies in the conversation.
 
+**Speak as** chooses who replies. *Myself* makes Digital Me your digital version:
+it answers as you, in the first person, treating your profile and approved
+memories as its own facts. It only claims what is written there and says it
+hasn't shared that yet when asked about anything else, such as favourites or
+hobbies. When asked directly whether it is real, it says it is an AI digital
+version of you, and the top bar labels it "AI digital version · not a live
+person". *An assistant* keeps the original helpful-assistant behaviour.
+
 **Deep reasoning (slower, more careful answers)** switches replies from Llama
 3.2 3B to Qwen3 4B with thinking enabled. Its reasoning is removed from the
 reply, but it takes much longer: on an RTX 3050 Laptop GPU (4 GB), an ordinary
