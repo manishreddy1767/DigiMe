@@ -45,9 +45,6 @@ describe("voice settings", () => {
 
     fireEvent.click(autoPlay);
     fireEvent.click(continuousMode);
-    fireEvent.change(screen.getByRole("combobox", { name: "Voice" }), {
-      target: { value: "am_michael" },
-    });
     fireEvent.click(screen.getByRole("button", { name: "Save voice settings" }));
 
     expect(await screen.findByText("Voice settings saved locally.")).toBeTruthy();
@@ -55,12 +52,12 @@ describe("voice settings", () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1]?.body as string)).toEqual({
       auto_play_responses: true,
       continuous_conversation_enabled: true,
-      voice: "am_michael",
+      voice: "af_heart",
     });
     expect(onSettingsChange).toHaveBeenLastCalledWith({
       auto_play_responses: true,
       continuous_conversation_enabled: true,
-      voice: "am_michael",
+      voice: "af_heart",
       updated_at: "2026-01-02T00:00:00+00:00",
     });
   });

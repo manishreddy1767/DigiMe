@@ -162,23 +162,9 @@ function VoiceSettings({
           />
           Enable continuous voice conversation
         </label>
-        <label>
-          Voice
-          <select
-            disabled={loading || saving}
-            onChange={(event) => {
-              const { value } = event.target;
-              if (isVoiceId(value)) setSettings({ ...settings, voice: value });
-            }}
-            value={settings.voice}
-          >
-            {VOICE_OPTIONS.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <p className="settings-note">
+          Choose the voice, or teach it your own, in Context → Your voice.
+        </p>
         <button disabled={loading || saving} type="submit">
           {loading ? "Loading voice settings…" : saving ? "Saving…" : "Save voice settings"}
         </button>

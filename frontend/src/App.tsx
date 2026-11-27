@@ -21,6 +21,13 @@ import {
 } from "./avatar/avatarAnimation";
 import Drawer from "./components/Drawer";
 import TopBar, { type AppStatus } from "./components/TopBar";
+import { startRecording as startSampleRecording } from "./audio/recorder";
+import { avatarFrameUrl, mediaApi, voiceSampleUrl } from "./media/api";
+import AvatarSettings from "./media/AvatarSettings";
+import { useAvatar, useMyVoice } from "./media/hooks";
+import MyVoiceSettings from "./media/MyVoiceSettings";
+import PhotoAvatar from "./media/PhotoAvatar";
+import VoicePicker from "./media/VoicePicker";
 import MemorySettings from "./MemorySettings";
 import MessageContent from "./MessageContent";
 import PersonalizationSettings from "./PersonalizationSettings";
@@ -135,6 +142,9 @@ function App() {
   const [voiceSettingsKey, setVoiceSettingsKey] = useState(0);
   const [appStatus, setAppStatus] = useState<AppStatus | null>(null);
   const [statusUnreachable, setStatusUnreachable] = useState(false);
+  const photoAvatar = useAvatar(mediaApi);
+  const myVoice = useMyVoice(mediaApi);
+  const photoManifest = photoAvatar.avatar?.avatar ?? null;
   const [personalizationEnabled, setPersonalizationEnabled] = useState(true);
   const [voiceSessionActive, setVoiceSessionActive] = useState(false);
   const [voiceRuntimeError, setVoiceRuntimeError] = useState<string | null>(null);
@@ -1333,23 +1343,41 @@ function App() {
               <span>{STAGE_LABELS[stageState]}</span>
             </div>
           </div>
-          <div className="stage__avatar">
-            <AvatarView
-              state={avatarState}
-              emotion={displayedAvatarEmotion}
-              onLoaded={handleAvatarLoaded}
-              onError={handleAvatarError}
-              getAudioAmplitude={getAudioAmplitude}
-            />
-          </div>
+          {photoManifest ? (
+            <div className="stage__avatar stage__avatar--photo">
+              <PhotoAvatar
+                emotion={displayedAvatarEmotion}
+                frameUrl={avatarFrameUrl}
+                level={getAudioAmplitude}
+                listening={stageState === "listening"}
+                manifest={photoManifest}
+                name={assistantName}
+                speaking={stageState === "speaking"}
+              />
+            </div>
+          ) : (
+            <div className="stage__avatar">
+              <AvatarView
+                state={avatarState}
+                emotion={displayedAvatarEmotion}
+                onLoaded={handleAvatarLoaded}
+                onError={handleAvatarError}
+                getAudioAmplitude={getAudioAmplitude}
+              />
+            </div>
+          )}
           <div className="avatar-status" role="status">
-            <span className={`status-dot ${avatarLoaded ? "ready" : ""}`} />
-            {avatarError ??
-              (avatarLoaded
-                ? avatarSource === "vrm"
-                  ? "Local VRM loaded"
-                  : "Procedural avatar ready"
-                : "Loading avatar…")}
+            <span className={`status-dot ${photoManifest || avatarLoaded ? "ready" : ""}`} />
+            {photoManifest
+              ? photoAvatar.avatar?.status === "rendering"
+                ? "Creating your new avatar…"
+                : "Your photo avatar"
+              : avatarError ??
+                (avatarLoaded
+                  ? avatarSource === "vrm"
+                    ? "Local VRM loaded"
+                    : "Default 3D avatar"
+                  : "Loading avatar…")}
           </div>
         </section>
 
@@ -1755,10 +1783,49 @@ function App() {
 
       <Drawer onClose={closeDrawer} open={drawer === "context"} title="Context" wide>
         <p className="drawer__intro">
-          What {assistantName} knows about you and how it talks. Everything here is
-          saved only on this computer and applies from your next message.
+          How {assistantName} looks, sounds and talks, and what it knows about you. Everything
+          here stays on this computer and applies from your next message.
         </p>
         <div className="drawer__sections">
+          <AvatarSettings
+            avatar={photoAvatar.avatar}
+            busy={photoAvatar.busy}
+            error={photoAvatar.error}
+            frameUrl={avatarFrameUrl}
+            onRemove={() => void photoAvatar.remove()}
+            onUpload={(photo) => void photoAvatar.upload(photo)}
+          />
+          <section aria-label="Your voice" className="voice-panel__section">
+            <h3>Your voice</h3>
+            <p className="voice-panel__note">
+              Pick the built-in voice you like, or teach {assistantName} to speak in your own
+              voice below.
+            </p>
+            <VoicePicker
+              onSaved={(saved) => {
+                setVoiceSettings(saved);
+                setVoiceSettingsKey((key) => key + 1);
+              }}
+              preview={(voice) => mediaApi.previewVoice(voice)}
+              settings={voiceSettings}
+            />
+            <MyVoiceSettings
+              beforeRecording={() => {
+                stopSpeech();
+                if (transcriptionStatus === "recording") stopRecording();
+              }}
+              busy={myVoice.busy}
+              error={myVoice.error}
+              myVoice={myVoice.myVoice}
+              onAdd={(recordings) => void myVoice.add(recordings)}
+              onClear={() => void myVoice.clear()}
+              onEnable={(enabled) => void myVoice.setEnabled(enabled)}
+              onPreview={() => mediaApi.previewVoice(voiceSettings.voice, true)}
+              onRemove={(name) => void myVoice.remove(name)}
+              sampleUrl={voiceSampleUrl}
+              startRecording={startSampleRecording}
+            />
+          </section>
           <MemorySettings
             conversationId={conversationId}
             personalizationEnabled={personalizationEnabled}
