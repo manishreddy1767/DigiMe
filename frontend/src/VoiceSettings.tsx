@@ -1,16 +1,34 @@
 import { FormEvent, useEffect, useState } from "react";
 
+export const VOICE_OPTIONS = [
+  { id: "af_heart", label: "Heart (female, warm)" },
+  { id: "af_bella", label: "Bella (female, bright)" },
+  { id: "af_nicole", label: "Nicole (female, soft)" },
+  { id: "af_sarah", label: "Sarah (female, clear)" },
+  { id: "am_michael", label: "Michael (male, calm)" },
+  { id: "am_fenrir", label: "Fenrir (male, deep)" },
+  { id: "am_puck", label: "Puck (male, lively)" },
+] as const;
+
+export type VoiceId = (typeof VOICE_OPTIONS)[number]["id"];
+
 export type VoiceSettingsValue = {
   auto_play_responses: boolean;
   continuous_conversation_enabled: boolean;
+  voice: VoiceId;
   updated_at: string;
 };
 
 export const DEFAULT_VOICE_SETTINGS: VoiceSettingsValue = {
   auto_play_responses: false,
   continuous_conversation_enabled: false,
+  voice: "af_heart",
   updated_at: "",
 };
+
+function isVoiceId(value: unknown): value is VoiceId {
+  return VOICE_OPTIONS.some((option) => option.id === value);
+}
 
 async function readVoiceSettings(response: Response): Promise<VoiceSettingsValue> {
   const result: unknown = await response.json();
@@ -36,9 +54,11 @@ async function readVoiceSettings(response: Response): Promise<VoiceSettingsValue
   ) {
     throw new Error("The voice settings service returned invalid settings.");
   }
+  const voice = "voice" in result && isVoiceId(result.voice) ? result.voice : "af_heart";
   return {
     auto_play_responses: result.auto_play_responses,
     continuous_conversation_enabled: result.continuous_conversation_enabled,
+    voice,
     updated_at: result.updated_at,
   };
 }
@@ -92,6 +112,7 @@ function VoiceSettings({
         body: JSON.stringify({
           auto_play_responses: settings.auto_play_responses,
           continuous_conversation_enabled: settings.continuous_conversation_enabled,
+          voice: settings.voice,
         }),
       });
       const saved = await readVoiceSettings(response);
@@ -140,6 +161,23 @@ function VoiceSettings({
             type="checkbox"
           />
           Enable continuous voice conversation
+        </label>
+        <label>
+          Voice
+          <select
+            disabled={loading || saving}
+            onChange={(event) => {
+              const { value } = event.target;
+              if (isVoiceId(value)) setSettings({ ...settings, voice: value });
+            }}
+            value={settings.voice}
+          >
+            {VOICE_OPTIONS.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </label>
         <button disabled={loading || saving} type="submit">
           {loading ? "Loading voice settings…" : saving ? "Saving…" : "Save voice settings"}

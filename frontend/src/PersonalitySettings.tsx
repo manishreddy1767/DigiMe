@@ -5,6 +5,7 @@ type Personality = {
   communication_style: "friendly" | "professional" | "casual";
   response_length: "concise" | "balanced" | "detailed";
   custom_instructions: string;
+  deep_reasoning: boolean;
   updated_at: string;
 };
 
@@ -13,6 +14,7 @@ const DEFAULT_PERSONALITY: Personality = {
   communication_style: "friendly",
   response_length: "balanced",
   custom_instructions: "",
+  deep_reasoning: false,
   updated_at: "",
 };
 
@@ -48,7 +50,8 @@ async function readPersonality(response: Response): Promise<Personality> {
     !("custom_instructions" in result) ||
     typeof result.custom_instructions !== "string" ||
     !("updated_at" in result) ||
-    typeof result.updated_at !== "string"
+    typeof result.updated_at !== "string" ||
+    ("deep_reasoning" in result && typeof result.deep_reasoning !== "boolean")
   ) {
     throw new Error("The personality service returned invalid settings.");
   }
@@ -57,6 +60,7 @@ async function readPersonality(response: Response): Promise<Personality> {
     communication_style: result.communication_style,
     response_length: result.response_length,
     custom_instructions: result.custom_instructions,
+    deep_reasoning: "deep_reasoning" in result && result.deep_reasoning === true,
     updated_at: result.updated_at,
   };
 }
@@ -65,7 +69,11 @@ function messageFor(error: unknown): string {
   return error instanceof Error ? error.message : "Could not save personality settings.";
 }
 
-function PersonalitySettings() {
+function PersonalitySettings({
+  onNameChange,
+}: {
+  onNameChange?: (name: string) => void;
+} = {}) {
   const [personality, setPersonality] = useState(DEFAULT_PERSONALITY);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -76,10 +84,11 @@ function PersonalitySettings() {
       .then(readPersonality)
       .then((saved) => {
         setPersonality(saved);
+        onNameChange?.(saved.name);
         setError(null);
       })
       .catch((loadError: unknown) => setError(messageFor(loadError)));
-  }, []);
+  }, [onNameChange]);
 
   const save = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -95,9 +104,12 @@ function PersonalitySettings() {
           communication_style: personality.communication_style,
           response_length: personality.response_length,
           custom_instructions: personality.custom_instructions,
+          deep_reasoning: personality.deep_reasoning,
         }),
       });
-      setPersonality(await readPersonality(response));
+      const saved = await readPersonality(response);
+      setPersonality(saved);
+      onNameChange?.(saved.name);
       setStatus("Personality settings saved locally.");
     } catch (saveError) {
       setError(messageFor(saveError));
@@ -112,7 +124,9 @@ function PersonalitySettings() {
     setStatus(null);
     try {
       const response = await fetch("/api/personality/reset", { method: "POST" });
-      setPersonality(await readPersonality(response));
+      const saved = await readPersonality(response);
+      setPersonality(saved);
+      onNameChange?.(saved.name);
       setStatus("Personality reset to defaults.");
     } catch (resetError) {
       setError(messageFor(resetError));
@@ -186,6 +200,16 @@ function PersonalitySettings() {
             rows={3}
             value={personality.custom_instructions}
           />
+        </label>
+        <label className="voice-setting">
+          <input
+            checked={personality.deep_reasoning}
+            onChange={(event) =>
+              setPersonality({ ...personality, deep_reasoning: event.target.checked })
+            }
+            type="checkbox"
+          />
+          Deep reasoning (slower, more careful answers)
         </label>
         <div className="personality-actions">
           <button disabled={saving} type="submit">

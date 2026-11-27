@@ -111,4 +111,31 @@ describe("digital personality settings", () => {
       "balanced",
     );
   });
+
+  it("saves deep reasoning and reports the assistant name", async () => {
+    let saved = { ...defaultPersonality, name: "Nova" };
+    const fetchMock = vi.fn(async (_input: string, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        saved = { ...JSON.parse(init.body as string), updated_at: "2026-11-27" };
+      }
+      return response(saved);
+    });
+    const onNameChange = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    render(<PersonalitySettings onNameChange={onNameChange} />);
+
+    fireEvent.click(await screen.findByText("Digital personality"));
+    const deepReasoning = await screen.findByRole("checkbox", {
+      name: "Deep reasoning (slower, more careful answers)",
+    });
+    expect(await screen.findByDisplayValue("Nova")).toBeTruthy();
+    expect((deepReasoning as HTMLInputElement).checked).toBe(false);
+    expect(onNameChange).toHaveBeenCalledWith("Nova");
+
+    fireEvent.click(deepReasoning);
+    fireEvent.click(screen.getByRole("button", { name: "Save personality" }));
+
+    expect(await screen.findByText("Personality settings saved locally.")).toBeTruthy();
+    expect(saved).toMatchObject({ name: "Nova", deep_reasoning: true });
+  });
 });

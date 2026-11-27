@@ -253,6 +253,81 @@ h2 {
   white-space: pre-wrap;
 }
 
+.message-markdown {
+  color: #edf2fb;
+  line-height: 1.55;
+}
+
+.message-markdown > :first-child {
+  margin-top: 0;
+}
+
+.message-markdown p {
+  margin: 0 0 0.6em;
+  white-space: normal;
+}
+
+.message-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.message-markdown ul,
+.message-markdown ol {
+  margin: 0 0 0.6em;
+  padding-left: 1.4em;
+}
+
+.message-markdown h1,
+.message-markdown h2,
+.message-markdown h3,
+.message-markdown h4 {
+  margin: 0.4em 0 0.4em;
+  font-size: 1rem;
+}
+
+.message-markdown a {
+  color: #a9c8ff;
+}
+
+.message-markdown code {
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: #142033;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.message-markdown pre {
+  margin: 0 0 0.6em;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #142033;
+  overflow-x: auto;
+}
+
+.message-markdown pre code {
+  padding: 0;
+  background: none;
+}
+
+.message-markdown table {
+  margin: 0 0 0.6em;
+  border-collapse: collapse;
+}
+
+.message-markdown th,
+.message-markdown td {
+  padding: 4px 8px;
+  border: 1px solid #2a384c;
+}
+
+.message-markdown blockquote {
+  margin: 0 0 0.6em;
+  padding-left: 10px;
+  border-left: 3px solid #3a5278;
+  color: #c8d4e6;
+}
+
 .speech-controls {
   display: flex;
   flex-wrap: wrap;

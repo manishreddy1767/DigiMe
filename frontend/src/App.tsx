@@ -6,6 +6,7 @@ import {
   type AvatarEmotion,
 } from "./avatar/avatarAnimation";
 import MemorySettings from "./MemorySettings";
+import MessageContent from "./MessageContent";
 import PersonalizationSettings from "./PersonalizationSettings";
 import PersonalitySettings from "./PersonalitySettings";
 import VoiceSettings, {
@@ -80,6 +81,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [speech, setSpeech] = useState<SpeechState>(IDLE_SPEECH_STATE);
   const [voiceSettings, setVoiceSettings] = useState(DEFAULT_VOICE_SETTINGS);
+  const [assistantName, setAssistantName] = useState("Digital Me");
   const [personalizationEnabled, setPersonalizationEnabled] = useState(true);
   const [voiceSessionActive, setVoiceSessionActive] = useState(false);
   const [voiceRuntimeError, setVoiceRuntimeError] = useState<string | null>(null);
@@ -1220,9 +1222,9 @@ function App() {
               messages.map((message, index) => (
                 <article className={`message ${message.role}`} key={`${index}-${message.role}`}>
                   <span className="message-author">
-                    {message.role === "user" ? "You" : "Digital Me"}
+                    {message.role === "user" ? "You" : assistantName}
                   </span>
-                  <p>{message.content}</p>
+                  <MessageContent content={message.content} role={message.role} />
                   {message.role === "assistant" && (
                     <div className="speech-controls">
                       {speech.messageIndex === index && speech.status === "generating" ? (
@@ -1288,7 +1290,7 @@ function App() {
                 </article>
               ))
             )}
-            {loading && <p className="thinking" role="status">Digital Me is thinking…</p>}
+            {loading && <p className="thinking" role="status">{assistantName} is thinking…</p>}
             {error && <p className="error-message" role="alert">{error}</p>}
           </div>
 
@@ -1409,7 +1411,7 @@ function App() {
             when you approve them below.
           </p>
           <div className="memory-settings">
-            <PersonalitySettings />
+            <PersonalitySettings onNameChange={setAssistantName} />
             <PersonalizationSettings
               onSettingsChange={handlePersonalizationSettingsChange}
               onUsePrompt={usePersonalizationPrompt}
