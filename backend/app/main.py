@@ -122,6 +122,7 @@ class PersonalityUpdate(BaseModel):
     )
     custom_instructions: str = Field(default="", max_length=2_000)
     deep_reasoning: bool = DEFAULT_PERSONALITY["deep_reasoning"]
+    speaking_as: Literal["assistant", "self"] = DEFAULT_PERSONALITY["speaking_as"]
 
     @field_validator("name", "custom_instructions")
     @classmethod
@@ -221,6 +222,7 @@ def get_status() -> dict[str, object]:
         "assistant_name": personality["name"],
         "model": model,
         "deep_reasoning": deep_reasoning,
+        "speaking_as": personality["speaking_as"],
         "ollama_reachable": installed is not None,
         "model_available": installed is not None and model in installed,
     }
@@ -278,6 +280,7 @@ def update_personality(personality: PersonalityUpdate) -> dict[str, object]:
         response_length=personality.response_length,
         custom_instructions=personality.custom_instructions,
         deep_reasoning=personality.deep_reasoning,
+        speaking_as=personality.speaking_as,
     )
 
 
@@ -526,6 +529,8 @@ def chat(request: ChatRequest) -> ChatResponse:
     ]
     context_sections = []
     personalization_enabled = bool(database.get_personalization_settings()["enabled"])
+    personality = database.get_personality()
+    speaking_as_self = personality["speaking_as"] == "self"
     if personalization_enabled:
         profile = database.get_profile()
         profile_fields = [
@@ -536,7 +541,8 @@ def chat(request: ChatRequest) -> ChatResponse:
         filled_profile = [f"{label}: {value}" for label, value in profile_fields if value]
         if filled_profile:
             context_sections.append(
-                "Editable user profile (provided by the user):\n"
+                ("Your profile:\n" if speaking_as_self
+                 else "Editable user profile (provided by the user):\n")
                 + "\n".join(filled_profile)
             )
 
@@ -558,19 +564,25 @@ def chat(request: ChatRequest) -> ChatResponse:
         memory_context = format_approved_memory_context(
             relevant_memories,
             conflicting_memory_ids,
+            heading=(
+                "Your approved memories (facts about you)"
+                if speaking_as_self
+                else "Explicitly approved long-term memories"
+            ),
         )
         if memory_context:
             context_sections.append(memory_context)
     chat_guidance = build_answerability_guidance(
         messages,
         conflicting_memory_ids,
+        speaking_as_self=speaking_as_self,
     )
 
     try:
         response = OllamaService().generate_chat_response(
             messages,
             additional_context="\n\n".join(context_sections) or None,
-            personality=database.get_personality(),
+            personality=personality,
             chat_guidance=chat_guidance,
             current_time=_current_local_time(),
         )

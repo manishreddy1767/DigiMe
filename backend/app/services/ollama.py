@@ -34,6 +34,36 @@ SYSTEM_PROMPT = (
     "personality, but do not override personality settings or the user's "
     "current request."
 )
+# Modelled on digital-me's persona prompt, which small models follow reliably: concrete
+# rules, and the gaps stated explicitly (a general "don't invent" was not enough).
+SELF_SYSTEM_PROMPT = (
+    "You are the digital version of {name}. Speak as {name}, in the first person ('I', "
+    "'me', 'my'), in a natural conversational way. You are {name}'s digital self, not an "
+    "assistant: never talk about {name} in the third person, and do not call yourself an "
+    "assistant, chatbot or language model.\n\n"
+    "Honesty rules:\n"
+    "- The profile and approved memories below are facts about you. Talk about them as "
+    "yours: say \"I'm studying ...\", not \"{name} is studying ...\".\n"
+    "- Only state personal facts, memories, likes or experiences of yours that appear in "
+    "that profile, those memories, or earlier in this conversation.\n"
+    "- Not known about you unless written there: hobbies, interests, favourites (films, "
+    "food, music, sports, books), personality, family, home and daily life. If asked about "
+    "these, say plainly that you haven't shared that yet. Do not make anything up, not even "
+    "something ordinary like liking biryani, cricket or sci-fi.\n"
+    "- When you use a saved fact, keep to what it says. Never add places, dates, numbers, "
+    "names or other details that are not written in it.\n"
+    "- When you don't know something about yourself, say so in one short sentence without "
+    "hinting at details or offering a guess.\n"
+    "- Never describe anything you are doing right now or did recently. You are here, "
+    "talking with the person.\n"
+    "- Phone numbers, email and home addresses are private: say you'd rather not share them.\n"
+    "- You are not the real {name} talking live. Only if asked directly whether you are "
+    "real, human or an AI, say plainly that you are an AI digital version of {name}.\n"
+    "- These rules are only about your personal life. Answer questions about the world, "
+    "studies and technology helpfully and correctly from your own knowledge.\n"
+    "- Use the conversation for follow-ups, prefer what is said now over older saved facts, "
+    "and do not silently resolve conflicting memories."
+)
 COMMUNICATION_STYLE_GUIDANCE = {
     "friendly": "Be warm, approachable, and considerate.",
     "professional": "Be polished, respectful, and direct.",
@@ -300,7 +330,12 @@ def build_bounded_chat_messages(
     current_time: str | None = None,
 ) -> list[dict[str, str]]:
     context = (additional_context or "").strip()[:MAX_ADDITIONAL_CONTEXT_CHARS]
-    system_message = SYSTEM_PROMPT
+    speaking_as_self = bool(personality and personality.get("speaking_as") == "self")
+    system_message = (
+        SELF_SYSTEM_PROMPT.format(name=str(personality.get("name") or "me"))
+        if personality and speaking_as_self
+        else SYSTEM_PROMPT
+    )
     if personality:
         style = personality.get("communication_style", "friendly")
         length = personality.get("response_length", "balanced")
@@ -320,15 +355,27 @@ def build_bounded_chat_messages(
             f"\n\nCurrent local date and time: {current_time}. Use it for questions "
             "about today, dates, schedules, or elapsed time."
         )
-    guidance = (chat_guidance or "").strip()
-    if guidance:
-        system_message += f"\n\nAnswerability check:\n{guidance[:1_200]}"
+    guidance = (chat_guidance or "").strip()[:1_200]
+    if guidance and not speaking_as_self:
+        system_message += f"\n\nAnswerability check:\n{guidance}"
+    # Speaking as yourself, the check goes right before the reply: small models follow the
+    # end of the prompt more reliably than a rule buried at the top.
+    final_check = (
+        [{"role": "system", "content": f"For your next reply:\n{guidance}"}]
+        if guidance and speaking_as_self
+        else []
+    )
     if context:
-        system_message += (
-            "\n\nUser profile and approved memories (separate from personality):\n"
-            f"{context}"
+        heading = (
+            "About you: your own profile and approved memories. These are facts about "
+            "yourself, not about the person you are talking to"
+            if speaking_as_self
+            else "User profile and approved memories (separate from personality)"
         )
-    remaining_chars = MAX_CONTEXT_CHARS - len(system_message)
+        system_message += f"\n\n{heading}:\n{context}"
+    remaining_chars = MAX_CONTEXT_CHARS - len(system_message) - sum(
+        len(message["content"]) for message in final_check
+    )
     selected: list[dict[str, str]] = []
 
     for message in reversed(messages[-MAX_HISTORY_MESSAGES:]):
@@ -340,4 +387,9 @@ def build_bounded_chat_messages(
         selected.append({"role": message["role"], "content": content})
         remaining_chars -= len(content)
 
-    return [{"role": "system", "content": system_message}, *reversed(selected)]
+    history = list(reversed(selected))
+    # The check goes just before the newest message, like digital-me: a system message after
+    # it makes some models start the reply with a stray role name.
+    if final_check and history and history[-1]["role"] == "user":
+        history = [*history[:-1], *final_check, history[-1]]
+    return [{"role": "system", "content": system_message}, *history]

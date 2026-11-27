@@ -38,6 +38,7 @@ def test_status_reports_the_active_model_and_whether_it_is_installed(
         "assistant_name": "Digital Me",
         "model": MODEL,
         "deep_reasoning": False,
+        "speaking_as": "assistant",
         "ollama_reachable": True,
         "model_available": True,
     }

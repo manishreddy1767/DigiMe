@@ -27,6 +27,7 @@ DEFAULT_PERSONALITY = {
     "response_length": "balanced",
     "custom_instructions": "",
     "deep_reasoning": False,
+    "speaking_as": "assistant",
 }
 DEFAULT_VOICE = "af_heart"
 AVAILABLE_VOICES = (
@@ -218,6 +219,11 @@ class Database:
                     "ALTER TABLE personality ADD COLUMN deep_reasoning "
                     "INTEGER NOT NULL DEFAULT 0 CHECK (deep_reasoning IN (0, 1))"
                 )
+            if "speaking_as" not in personality_columns:
+                connection.execute(
+                    "ALTER TABLE personality ADD COLUMN speaking_as TEXT NOT NULL "
+                    "DEFAULT 'assistant' CHECK (speaking_as IN ('assistant', 'self'))"
+                )
             voice_columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(voice_settings)").fetchall()
@@ -365,7 +371,7 @@ class Database:
             row = connection.execute(
                 """
                 SELECT name, communication_style, response_length,
-                       custom_instructions, deep_reasoning, updated_at
+                       custom_instructions, deep_reasoning, speaking_as, updated_at
                 FROM personality WHERE id = 1
                 """
             ).fetchone()
@@ -380,6 +386,7 @@ class Database:
         response_length: str,
         custom_instructions: str,
         deep_reasoning: bool = False,
+        speaking_as: str = "assistant",
     ) -> dict[str, object]:
         now = self._now()
         with self._connection() as connection:
@@ -387,7 +394,8 @@ class Database:
                 """
                 UPDATE personality
                 SET name = ?, communication_style = ?, response_length = ?,
-                    custom_instructions = ?, deep_reasoning = ?, updated_at = ?
+                    custom_instructions = ?, deep_reasoning = ?, speaking_as = ?,
+                    updated_at = ?
                 WHERE id = 1
                 """,
                 (
@@ -396,6 +404,7 @@ class Database:
                     response_length,
                     custom_instructions,
                     int(deep_reasoning),
+                    speaking_as,
                     now,
                 ),
             )

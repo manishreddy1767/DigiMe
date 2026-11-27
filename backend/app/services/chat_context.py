@@ -14,6 +14,13 @@ _PERSONAL_FACT_QUESTION = re.compile(
     r"|\bwhere\s+do\s+i\b",
     re.IGNORECASE,
 )
+_SELF_FACT_QUESTION = re.compile(
+    r"\b(?:what|where|when|who|which|how)(?:\s+(?:is|are|was|were|do|did)|['’]s)\s+your\b"
+    r"|\bdo\s+you\s+(?:like|prefer|enjoy|study|work|live|have|know)\b"
+    r"|\bwhere\s+(?:do|did)\s+you\b"
+    r"|\b(?:about|describe)\s+yourself\b",
+    re.IGNORECASE,
+)
 _MEMORY_ASSERTIONS = (
     (
         "residence",
@@ -101,6 +108,7 @@ def find_conflicting_memory_ids(memories: list[dict[str, object]]) -> set[str]:
 def format_approved_memory_context(
     memories: list[dict[str, object]],
     conflicting_ids: set[str],
+    heading: str = "Explicitly approved long-term memories",
 ) -> str | None:
     lines: list[str] = []
     for memory in memories:
@@ -116,12 +124,13 @@ def format_approved_memory_context(
         lines.append(f"- {marker}{content.strip()}")
     if not lines:
         return None
-    return "Explicitly approved long-term memories:\n" + "\n".join(lines)
+    return f"{heading}:\n" + "\n".join(lines)
 
 
 def build_answerability_guidance(
     messages: list[dict[str, str]],
     conflicting_memory_ids: set[str],
+    speaking_as_self: bool = False,
 ) -> str | None:
     latest = messages[-1]["content"].strip()
     guidance: list[str] = []
@@ -143,6 +152,14 @@ def build_answerability_guidance(
             "Check prior user turns and relevant profile or approved memories "
             "for this personal fact. If it is not stated, say you do not know "
             "rather than guessing."
+        )
+    if speaking_as_self and _SELF_FACT_QUESTION.search(latest):
+        guidance.append(
+            "This asks about you. Check whether the answer is written in your profile, "
+            "your approved memories or this conversation. If it is, answer in the first "
+            "person using only that. If it is not, say only that you haven't shared that "
+            "yet (for example: \"Hmm, I haven't actually shared that yet.\"), and do not "
+            "name any example, preference, opinion, experience or guess."
         )
     if conflicting_memory_ids:
         guidance.append(
