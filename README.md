@@ -9,8 +9,13 @@ memories.
 - React/Three.js procedural human avatar and text chat UI; a compatible local
   VRM can optionally replace the fallback later.
 - FastAPI chat endpoint backed by Ollama's local `/api/chat` endpoint.
-- Qwen3 4B with a 4K-token context; sent history is bounded to the latest 20
-  messages and 12,000 characters, including the system prompt.
+- Llama 3.2 3B for fast everyday replies, and Qwen3 4B with step-by-step
+  thinking when the optional **Deep reasoning** setting is on. Both use a
+  4K-token context; sent history is bounded to the latest 20 messages and
+  12,000 characters, including the system prompt.
+- The assistant is told the current local date and time with each message.
+- Assistant replies render Markdown (lists, bold, code, tables, links) without
+  raw HTML or remote images; Markdown and emoji are removed before speech.
 - SQLite conversation history with separate conversation IDs, restore-on-start,
   history selection, and conversation deletion.
 - An editable local profile and explicitly approved long-term memories with
@@ -76,8 +81,19 @@ cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[test,tts,stt]"
+ollama pull llama3.2:3b
 ollama pull qwen3:4b
 ```
+
+On Windows, pip installs a CPU-only PyTorch by default. To let Kokoro use an
+NVIDIA GPU, install the CUDA build first, before the extras:
+
+```powershell
+python -m pip install torch --index-url https://download.pytorch.org/whl/cu126
+```
+
+Kokoro does not support Python 3.13+ yet; create the virtual environment with
+Python 3.11 or 3.12.
 
 In another terminal:
 
@@ -153,7 +169,15 @@ optional custom instructions. Settings are persisted locally and applied in
 every conversation as system-prompt instructions, separate from the editable
 user profile and approved memories. Save changes explicitly or reset the
 personality to its defaults. Ordinary chat messages never change these saved
-settings.
+settings. The name you choose is also shown on replies in the conversation.
+
+**Deep reasoning (slower, more careful answers)** switches replies from Llama
+3.2 3B to Qwen3 4B with thinking enabled. Its reasoning is removed from the
+reply, but it takes much longer: on an RTX 3050 Laptop GPU (4 GB), an ordinary
+reply takes about 0.5–5 seconds and a deep-reasoning reply about 30–60
+seconds. Switching between the two models also reloads the model once, which
+adds roughly 10 seconds to the first reply after the change. It is off by
+default.
 
 Expand **Personalization & optional ideas** to enable or disable use of the
 editable profile and approved memories in chat. The setting is stored locally
@@ -174,7 +198,7 @@ on recurring topics and approved-memory topics, and does not send anything.
 At most the 100 most recently updated approved memories are considered.
 Choose **Use in draft** to edit the prompt before sending, or dismiss it.
 
-If Ollama is stopped or Qwen3 4B is unavailable, the UI shows the backend error
+If Ollama is stopped or the selected model is unavailable, the UI shows the backend error
 and keeps the message visible so you can resend it after fixing the local runtime.
 
 For an assistant response, choose **Generate audio** to synthesize speech
@@ -192,8 +216,10 @@ requested only after you start recording. Recordings are held in memory,
 limited to 20 MB, and are not written to disk. The app does not listen in the
 background.
 
-Expand **Voice settings** to enable automatic playback and continuous voice
-conversation. Save settings explicitly. Enabling continuous mode only makes the
+Expand **Voice settings** to choose one of seven English Kokoro voices (Heart,
+Bella, Nicole, Sarah, Michael, Fenrir or Puck) and to enable automatic playback
+and continuous voice conversation. Save settings explicitly; the chosen voice is
+used for every reply spoken afterwards. Enabling continuous mode only makes the
 mode available; use **Start voice conversation** to activate the microphone for
 that session. The app does not resume listening after a restart. In this mode,
 recording stops after approximately 0.9 seconds of detected silence following
