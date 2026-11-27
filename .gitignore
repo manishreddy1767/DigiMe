@@ -237,3 +237,6 @@ __marimo__/
 .env
 .env.*
 !.env.example
+
+# Local GPU models (LivePortrait, OpenVoice); may be a link to an existing install
+/models/

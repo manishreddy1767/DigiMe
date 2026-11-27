@@ -22,6 +22,9 @@ stt = [
     "av>=11,<19",
     "faster-whisper>=1.1,<2",
 ]
+avatar = [
+    "pillow>=11",
+]
 memory = [
     "sentence-transformers>=5,<7",
 ]

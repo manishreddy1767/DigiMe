@@ -87,6 +87,30 @@ class OllamaService:
             if isinstance(model, dict) and isinstance(model.get("name"), str)
         }
 
+    def unload_models(self) -> None:
+        """Ask Ollama to release every loaded model from memory (best effort)."""
+        try:
+            with urlopen(Request(f"{OLLAMA_URL}/api/ps", method="GET"), timeout=3) as response:
+                payload = json.load(response)
+        except (URLError, TimeoutError, OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return
+        models = payload.get("models") if isinstance(payload, dict) else None
+        for model in models if isinstance(models, list) else []:
+            name = model.get("name") if isinstance(model, dict) else None
+            if not isinstance(name, str):
+                continue
+            request = Request(
+                f"{OLLAMA_URL}/api/generate",
+                data=json.dumps({"model": name, "keep_alive": 0}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urlopen(request, timeout=30):
+                    pass
+            except (URLError, TimeoutError, OSError):
+                continue
+
     def generate_check_response(self) -> GenerationResult:
         request_body = {
             "model": MODEL,

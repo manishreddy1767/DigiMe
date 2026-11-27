@@ -227,6 +227,11 @@ class Database:
                     "ALTER TABLE voice_settings ADD COLUMN voice TEXT NOT NULL "
                     f"DEFAULT '{DEFAULT_VOICE}'"
                 )
+            if "my_voice_enabled" not in voice_columns:
+                connection.execute(
+                    "ALTER TABLE voice_settings ADD COLUMN my_voice_enabled "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (my_voice_enabled IN (0, 1))"
+                )
 
     @staticmethod
     def _now() -> str:
@@ -441,6 +446,20 @@ class Database:
                 ),
             )
         return self.get_voice_settings()
+
+    def get_my_voice_enabled(self) -> bool:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT my_voice_enabled FROM voice_settings WHERE id = 1"
+            ).fetchone()
+        return bool(row["my_voice_enabled"])
+
+    def set_my_voice_enabled(self, enabled: bool) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                "UPDATE voice_settings SET my_voice_enabled = ?, updated_at = ? WHERE id = 1",
+                (int(enabled), self._now()),
+            )
 
     def get_personalization_settings(self) -> dict[str, object]:
         with self._connection() as connection:

@@ -8,6 +8,8 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.media import apply_my_voice
+from app.media import router as media_router
 from app.services.chat_context import (
     build_answerability_guidance,
     build_memory_search_query,
@@ -66,6 +68,7 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+app.include_router(media_router)
 
 MAX_STT_AUDIO_BYTES = 20 * 1024 * 1024
 
@@ -178,6 +181,21 @@ class TTSRequest(BaseModel):
         if not value.strip():
             raise ValueError("Text must not be blank.")
         return value
+
+
+class VoicePreviewRequest(BaseModel):
+    voice: str | None = None
+    my_voice: bool | None = None
+
+    @field_validator("voice")
+    @classmethod
+    def voice_must_be_available(cls, value: str | None) -> str | None:
+        if value is not None and value not in AVAILABLE_VOICES:
+            raise ValueError(f"Choose one of: {', '.join(AVAILABLE_VOICES)}.")
+        return value
+
+
+VOICE_PREVIEW_TEXT = "Hi! This is how I sound. I can help you study, plan and think things through."
 
 
 class STTResponse(BaseModel):
@@ -581,7 +599,22 @@ def text_to_speech(request: TTSRequest) -> Response:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
     return Response(
-        content=audio,
+        content=apply_my_voice(audio, voice),
+        media_type="audio/wav",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/api/voice/preview")
+def preview_voice(request: VoicePreviewRequest) -> Response:
+    """A short sample in a chosen built-in voice, or in your own voice."""
+    voice = request.voice or str(Database().get_voice_settings()["voice"])
+    try:
+        audio = get_kokoro_service().synthesize_to_wav(VOICE_PREVIEW_TEXT, voice=voice)
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    return Response(
+        content=apply_my_voice(audio, voice, mine=bool(request.my_voice)),
         media_type="audio/wav",
         headers={"Cache-Control": "no-store"},
     )
